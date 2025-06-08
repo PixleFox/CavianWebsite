@@ -1,6 +1,22 @@
 @import "tailwindcss/preflight";
 @import "tailwindcss/utilities";
 
+@font-face {
+  font-family: 'Pinar';
+  src: url('/fonts/Pinar-DS1-FD-Medium.ttf') format('truetype');
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Pinar';
+  src: url('/fonts/Pinar-DS1-FD-ExtraBold.ttf') format('truetype');
+  font-weight: 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+
 :root {
   --primary: 210 90% 55%;
   --primary-foreground: 0 0% 100%;
@@ -24,11 +40,13 @@
 body {
   color: hsl(var(--foreground));
   background-color: hsl(var(--background));
+  font-family: 'Pinar', Arial, Helvetica, sans-serif;
   transition: color 0.2s, background-color 0.2s;
 }
 
 h1, h2, h3, h4, h5, h6 {
-  font-weight: 600;
+  font-family: 'Pinar', Arial, Helvetica, sans-serif;
+  font-weight: 800;
   line-height: 1.2;
   margin-bottom: 0.5em;
 }
