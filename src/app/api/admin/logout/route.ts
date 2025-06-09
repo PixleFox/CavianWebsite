@@ -4,25 +4,49 @@ import { verifyToken } from '../../../../../lib/auth';
 
 export async function GET(request: NextRequest) {
   try {
-    // Get token from Authorization header
-    const authHeader = request.headers.get('authorization');
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    // دریافت توکن از کوکی
+    const token = request.cookies.get('adminToken')?.value;
+    console.log('توکن از کوکی:', token); // دیباگ
+
+    if (!token) {
       return NextResponse.json(
-        { success: false, error: 'Unauthorized' },
+        { success: false, error: 'هیچ توکنی برای خروج یافت نشد' },
         { status: 401 }
       );
     }
 
-    const token = authHeader.split(' ')[1];
+    // اعتبارسنجی توکن
     const decoded = verifyToken(token);
+    console.log('توکن دکد شده:', decoded); // دیباگ
     if (!decoded) {
-      return NextResponse.json(
-        { success: false, error: 'Invalid or expired token' },
+      const response = NextResponse.json(
+        { success: false, error: 'توکن نامعتبر است یا منقضی شده است' },
         { status: 401 }
       );
+      response.cookies.set('adminToken', '', { maxAge: 0, path: '/' });
+      return response;
     }
 
-    // Invalidate session
+    // بررسی وجود سشن با توکن
+    const session = await prisma.adminSession.findFirst({
+      where: {
+        adminId: decoded.adminId,
+        tokenHash: token,
+        isValid: true,
+        expiresAt: { gt: new Date() },
+      },
+    });
+
+    if (!session) {
+      const response = NextResponse.json(
+        { success: false, error: 'سشن معتبر برای این توکن یافت نشد' },
+        { status: 401 }
+      );
+      response.cookies.set('adminToken', '', { maxAge: 0, path: '/' });
+      return response;
+    }
+
+    // غیرفعال کردن سشن
     await prisma.adminSession.updateMany({
       where: {
         adminId: decoded.adminId,
@@ -35,21 +59,27 @@ export async function GET(request: NextRequest) {
       },
     });
 
-    // Update last logout time
+    // به‌روزرسانی زمان لوگ‌اوت
     await prisma.admin.update({
       where: { id: decoded.adminId },
       data: { lastLogoutAt: new Date() },
     });
 
-    return NextResponse.json(
-      { success: true, message: 'Logged out successfully' },
+    // حذف کوکی
+    const response = NextResponse.json(
+      { success: true, message: 'با موفقیت از حساب خود خارج شدید' },
       { status: 200 }
     );
+    response.cookies.set('adminToken', '', { maxAge: 0, path: '/' });
+
+    return response;
   } catch (error) {
-    console.error('Logout error:', error);
-    return NextResponse.json(
-      { success: false, error: 'Internal server error' },
+    console.error('خطای لوگ‌اوت:', error);
+    const response = NextResponse.json(
+      { success: false, error: 'خطای سرور در فرآیند خروج. لطفاً با پشتیبانی تماس بگیرید' },
       { status: 500 }
     );
+    response.cookies.set('adminToken', '', { maxAge: 0, path: '/' });
+    return response;
   }
 }

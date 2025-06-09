@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import prisma from '../../../../../lib/prisma';
-import { generateToken } from '../../../../../lib/auth';
+import prisma from '../../../../../../lib/prisma';
+import { generateToken } from '../../../../../../lib/auth';
 
 // Input validation schema
 const verifyOTPSchema = z.object({
-  phoneNumber: z.string().regex(/^\+\d{10,15}$/, 'Invalid phone number format'),
-  otp: z.string().length(6, 'OTP must be 6 digits'),
+  phoneNumber: z.string().regex(/^\+\d{10,15}$/, 'شماره تلفن نامعتبر است'),
+  otp: z.string().length(6, 'OTP باید ۶ رقم باشد'),
 });
 
 export async function POST(request: NextRequest) {
@@ -22,7 +22,7 @@ export async function POST(request: NextRequest) {
 
     if (!admin) {
       return NextResponse.json(
-        { success: false, error: 'Phone number not registered' },
+        { success: false, error: 'شماره تلفن ثبت نشده است' },
         { status: 404 }
       );
     }
@@ -43,7 +43,7 @@ export async function POST(request: NextRequest) {
         data: { failedLoginAttempts: admin.failedLoginAttempts + 1 },
       });
       return NextResponse.json(
-        { success: false, error: 'Invalid or expired OTP' },
+        { success: false, error: 'OTP نامعتبر یا منقضی شده است' },
         { status: 401 }
       );
     }
@@ -71,19 +71,19 @@ export async function POST(request: NextRequest) {
     await prisma.adminSession.create({
       data: {
         adminId: admin.id,
-        tokenHash: token, // In production, hash the token
+        tokenHash: token, // در تولید، توکن رو هش کن
         ipAddress: request.headers.get('x-forwarded-for') || 'unknown',
         userAgent: request.headers.get('user-agent') || 'unknown',
-        expiresAt: new Date(Date.now() + 60 * 60 * 1000), // 1 hour
+        expiresAt: new Date(Date.now() + 60 * 60 * 1000), // ۱ ساعت
         isValid: true,
       },
     });
 
-    return NextResponse.json(
+    // Set JWT in HttpOnly cookie
+    const response = NextResponse.json(
       {
         success: true,
         data: {
-          token,
           admin: {
             id: admin.id,
             phoneNumber: admin.phoneNumber,
@@ -95,6 +95,16 @@ export async function POST(request: NextRequest) {
       },
       { status: 200 }
     );
+
+    response.cookies.set('adminToken', token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production', // فقط تو تولید Secure
+      sameSite: 'strict',
+      maxAge: 60 * 60, // ۱ ساعت
+      path: '/',
+    });
+
+    return response;
   } catch (error) {
     if (error instanceof z.ZodError) {
       return NextResponse.json(
@@ -102,9 +112,9 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       );
     }
-    console.error('Verify OTP error:', error);
+    console.error('خطای تأیید OTP:', error);
     return NextResponse.json(
-      { success: false, error: 'Internal server error' },
+      { success: false, error: 'خطای سرور' },
       { status: 500 }
     );
   }
