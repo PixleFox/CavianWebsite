@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import prisma from '../../../../../../lib/prisma';
 import { generateToken } from '../../../../../../lib/auth';
+import { handleError, Errors } from '../../../../../../lib/error-handler';
+import { SuccessMessages } from '../../../../../../lib/success-messages';
 
 // Input validation schema
 const verifyOTPSchema = z.object({
@@ -21,17 +23,21 @@ export async function POST(request: NextRequest) {
     });
 
     if (!admin) {
-      return NextResponse.json(
-        { success: false, error: 'شماره تلفن ثبت نشده است' },
-        { status: 404 }
-      );
+      throw Errors.notFound('شماره تلفن ثبت نشده است');
     }
 
-    // Find valid OTP session
+    // Hash the input OTP for comparison
+    const crypto = await import('crypto');
+    const hashedOTP = crypto
+      .createHash('sha256')
+      .update(otp)
+      .digest('hex');
+
+    // Find valid OTP session with the hashed OTP
     const session = await prisma.adminSession.findFirst({
       where: {
         adminId: admin.id,
-        tokenHash: otp,
+        tokenHash: hashedOTP,
         isValid: true,
         expiresAt: { gt: new Date() },
       },
@@ -42,10 +48,7 @@ export async function POST(request: NextRequest) {
         where: { id: admin.id },
         data: { failedLoginAttempts: admin.failedLoginAttempts + 1 },
       });
-      return NextResponse.json(
-        { success: false, error: 'OTP نامعتبر یا منقضی شده است' },
-        { status: 401 }
-      );
+      throw Errors.authentication('OTP نامعتبر یا منقضی شده است');
     }
 
     // Reset failed login attempts and update login time
@@ -67,12 +70,27 @@ export async function POST(request: NextRequest) {
     // Generate JWT
     const token = generateToken(admin.id, admin.role);
 
+    // Simple IP tracking - gets the first IP from x-forwarded-for or falls back to x-real-ip
+    const getClientIp = (req: NextRequest): string => {
+      // Get IP from x-forwarded-for header (common in production)
+      const forwardedFor = req.headers.get('x-forwarded-for');
+      if (forwardedFor) {
+        // Take the first IP in the list (client IP is usually first)
+        return forwardedFor.split(',')[0].trim();
+      }
+      
+      // Fall back to x-real-ip if available
+      return req.headers.get('x-real-ip') || 'unknown';
+    };
+    
+    const ip = getClientIp(request) || 'unknown';
+
     // Create new session for JWT
     await prisma.adminSession.create({
       data: {
         adminId: admin.id,
-        tokenHash: token, // در تولید، توکن رو هش کن
-        ipAddress: request.headers.get('x-forwarded-for') || 'unknown',
+        tokenHash: token,
+        ipAddress: ip,
         userAgent: request.headers.get('user-agent') || 'unknown',
         expiresAt: new Date(Date.now() + 60 * 60 * 1000), // ۱ ساعت
         isValid: true,
@@ -83,6 +101,7 @@ export async function POST(request: NextRequest) {
     const response = NextResponse.json(
       {
         success: true,
+        message: SuccessMessages.OTP_VERIFIED,
         data: {
           admin: {
             id: admin.id,
@@ -106,16 +125,6 @@ export async function POST(request: NextRequest) {
 
     return response;
   } catch (error) {
-    if (error instanceof z.ZodError) {
-      return NextResponse.json(
-        { success: false, error: error.errors },
-        { status: 400 }
-      );
-    }
-    console.error('خطای تأیید OTP:', error);
-    return NextResponse.json(
-      { success: false, error: 'خطای سرور' },
-      { status: 500 }
-    );
+    return handleError(error, request);
   }
 }
