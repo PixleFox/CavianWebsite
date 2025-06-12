@@ -2,6 +2,7 @@ export const SuccessMessages = {
   // Auth related
   OTP_SENT: 'کد تایید با موفقیت ارسال شد',
   OTP_VERIFIED: 'احراز هویت با موفقیت انجام شد',
+  LOGIN_SUCCESS: 'ورود با موفقیت انجام شد',
   LOGOUT_SUCCESS: 'شما با موفقیت از حساب کاربری خود خارج شدید',
   
   // Admin related

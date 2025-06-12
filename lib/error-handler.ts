@@ -115,7 +115,13 @@ export const Errors = {
   authentication: (message?: string) => 
     createError('AUTHENTICATION_ERROR', message, 401),
     
+  unauthorized: (message?: string) => 
+    createError('AUTHENTICATION_ERROR', message, 401),
+    
   authorization: (message?: string) => 
+    createError('AUTHORIZATION_ERROR', message, 403),
+    
+  forbidden: (message?: string) => 
     createError('AUTHORIZATION_ERROR', message, 403),
     
   notFound: (message?: string) => 
