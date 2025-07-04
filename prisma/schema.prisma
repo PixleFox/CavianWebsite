@@ -86,7 +86,6 @@ model Admin {
   createdProducts   Product[]      @relation("CreatedProducts")
   updatedProducts   Product[]      @relation("UpdatedProducts")
 
-
   @@index([email])
   @@index([phoneNumber])
   @@index([creatorId])
@@ -111,11 +110,9 @@ model AdminSession {
 }
 
 // ========== PRODUCT MODELS ==========
-
 model Product {
   // Core Identifiers
-  id          String    @id @default(uuid())
-  sku         String    @unique
+  id          String    @id
   name        String
   slug        String    @unique
   description String?
@@ -127,21 +124,21 @@ model Product {
   tags        String[]
   gender      Gender?
   
-  // Pricing
-  price       Decimal
-  compareAtPrice Decimal?
-  costPrice   Decimal?
+  // Pricing (derived from variants)
+  price       Decimal   @default(0)  // Lowest price from active variants
+  compareAtPrice Decimal?            // Highest compareAtPrice from variants
+  costPrice   Decimal?               // Weighted average cost from variants
   
   // Inventory
   variants    Variant[]
-  totalStock  Int
+  totalStock  Int       @default(0) // Sum of all variants' stock
   isActive    Boolean   @default(false)
   manageStock Boolean   @default(true)
   
   // Media
-  mainImage   String
-  images      String[]
-  videoUrl    String?
+  mainImage   String?   // First image from variants
+  images      String[]  // All unique images from variants
+  videoUrl    String?   // First video URL from variants
   
   // Physical Properties
   weight      Int?      // in grams
@@ -154,7 +151,7 @@ model Product {
   accessoryAttributes AccessoryAttributes?
   
   // Sizing
-  availableSizes String[]  // ["S", "M", "L"]
+  availableSizes String[]  // Unique sizes from active variants
   sizeGuide     SizeGuide? @relation("ProductSizeGuide", fields: [sizeGuideId], references: [id])
   sizeGuideId   String?
   
@@ -181,7 +178,7 @@ model Product {
 
 model Variant {
   id          String    @id @default(uuid())
-  sku         String    @unique
+  sku         String
   barcode     String?
   
   // Attributes

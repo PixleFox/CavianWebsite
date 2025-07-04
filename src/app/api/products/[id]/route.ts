@@ -2,6 +2,9 @@ import { NextResponse } from 'next/server';
 import { PrismaClient, Prisma } from '@prisma/client';
 import { verifyToken } from '../../../../../lib/auth';
 import { z } from 'zod';
+import { updateProductAggregations } from '@lib/product-utils';
+import { generateSKU } from '@lib/sku-utils';
+import { generateBarcode } from '@lib/barcode-utils';
 
 type ErrorDetails = Record<string, unknown>;
 type ApiResponseData = Record<string, unknown>;
@@ -52,6 +55,23 @@ type Params = {
   };
 };
 
+// Schema for updating product variants
+const updateVariantsSchema = z.object({
+  variants: z.array(z.object({
+    id: z.string().optional(),
+    size: z.string().min(1, 'اندازه الزامی است'),
+    sku: z.string().min(1, 'کد کالا الزامی است'),
+    barcode: z.string().optional(),
+    color: z.string().optional(),
+    colorHex: z.string().optional(),
+    price: z.number().min(0, 'قیمت نمی‌تواند منفی باشد').optional(),
+    compareAtPrice: z.number().min(0).optional().nullable(),
+    costPrice: z.number().min(0).optional(),
+    quantity: z.number().min(0, 'تعداد نمی‌تواند منفی باشد').default(0),
+    isActive: z.boolean().default(true),
+  })).min(1, 'حداقل یک نوع محصول باید وجود داشته باشد')
+});
+
 export async function GET(request: Request, { params }: Params) {
   try {
     const { id } = params;
@@ -85,7 +105,7 @@ export async function GET(request: Request, { params }: Params) {
       return errorResponse(401, MESSAGES.INVALID_TOKEN);
     }
 
-    // Get the product with related data including variant sizes
+    // Get the product with related data including variants
     const product = await prisma.product.findUnique({
       where: { id },
       include: {
@@ -98,8 +118,14 @@ export async function GET(request: Request, { params }: Params) {
         },
         variants: {
           select: {
+            id: true,
             size: true,
-            isActive: true
+            sku: true,
+            barcode: true,
+            price: true,
+            stock: true,
+            isActive: true,
+            image: true,
           },
           where: { isActive: true }
         },
@@ -179,15 +205,6 @@ export async function PUT(request: Request, { params }: Params) {
         { status: 401, headers: { 'Content-Type': 'application/json' } }
       );
     }
-    if (!token) {
-      return new NextResponse(
-        JSON.stringify({ 
-          error: 'Unauthorized: Invalid token format',
-          receivedHeader: authHeader
-        }), 
-        { status: 401, headers: { 'Content-Type': 'application/json' } }
-      );
-    }
 
     const decoded = verifyToken(token);
     console.log('PUT Decoded token:', decoded);
@@ -214,13 +231,35 @@ export async function PUT(request: Request, { params }: Params) {
       return new NextResponse('Product not found', { status: 404 });
     }
 
+    // Update only allowed fields, excluding derived fields (price, totalStock, images, availableSizes)
+    const updateData: Prisma.ProductUpdateInput = {
+      name: body.name,
+      slug: body.slug,
+      description: body.description,
+      type: body.type,
+      tags: body.tags,
+      gender: body.gender,
+      compareAtPrice: body.compareAtPrice,
+      costPrice: body.costPrice,
+      isActive: body.isActive,
+      manageStock: body.manageStock,
+      mainImage: body.mainImage,
+      videoUrl: body.videoUrl,
+      weight: body.weight,
+      dimensions: body.dimensions,
+      material: body.material,
+      isFeatured: body.isFeatured,
+      isNew: body.isNew,
+      metaTitle: body.metaTitle,
+      metaDescription: body.metaDescription,
+      category: body.categoryId ? { connect: { id: body.categoryId } } : undefined,
+      updatedBy: { connect: { id: decoded.adminId } },
+    };
+
     // Update the product
     const updatedProduct = await prisma.product.update({
       where: { id },
-      data: {
-        ...body,
-        updatedBy: { connect: { id: decoded.adminId } },
-      },
+      data: updateData,
       include: {
         category: {
           select: {
@@ -238,21 +277,6 @@ export async function PUT(request: Request, { params }: Params) {
     return new NextResponse('Internal Server Error', { status: 500 });
   }
 }
-
-// Schema for updating product variants
-const updateVariantsSchema = z.object({
-  variants: z.array(z.object({
-    id: z.string().optional(),
-    size: z.string().min(1, 'اندازه الزامی است'),
-    sku: z.string().min(1, 'کد کالا الزامی است'),
-    barcode: z.string().optional(),
-    price: z.number().min(0, 'قیمت نمی‌تواند منفی باشد').optional(),
-    compareAtPrice: z.number().min(0).optional().nullable(),
-    costPrice: z.number().min(0).optional(),
-    quantity: z.number().min(0, 'تعداد نمی‌تواند منفی باشد').default(0),
-    isActive: z.boolean().default(true),
-  })).min(1, 'حداقل یک نوع محصول باید وجود داشته باشد')
-});
 
 export async function PATCH(request: Request, { params }: Params) {
   try {
@@ -318,113 +342,101 @@ export async function PATCH(request: Request, { params }: Params) {
       const updatedVariants = [];
       
       for (const variant of variants) {
+        // For new variants, generate SKU based on product type and color
+        // For existing variants, keep the existing SKU
+        const sku = variant.id ? variant.sku : generateSKU(product.type, variant.color);
+        
+        // Generate barcode for new variants if not provided
+        const barcode = variant.barcode || generateBarcode();
+        
         const variantData = {
           size: variant.size,
-          sku: variant.sku,
-          barcode: variant.barcode,
+          sku, // Use generated SKU for new variants, existing SKU for updates
+          barcode,
+          color: variant.color || null,
+          colorHex: variant.colorHex || null,
           price: variant.price,
           compareAtPrice: variant.compareAtPrice,
           costPrice: variant.costPrice,
-          stock: variant.quantity, // Map quantity to stock
+          stock: variant.quantity,
           isActive: variant.isActive,
         };
 
         // Check if variant with this SKU already exists for this product
-        // No need for separate where variable as we use it directly in findFirst
-
         const existingVariant = await tx.variant.findFirst({
           where: variant.id 
             ? { id: variant.id, productId: id }
-            : { 
-                sku: variant.sku, 
-                productId: id,
-                ...(variant.id ? { id: { not: variant.id } } : {})
-              }
+            : { sku: variant.sku, productId: id, ...(variant.id ? { id: { not: variant.id } } : {}) }
         });
 
         if (existingVariant) {
           // Update existing variant
-          // First update the variant
           const updated = await tx.variant.update({
             where: { id: existingVariant.id },
             data: variantData,
-            include: {
-              product: true
-            }
-          });
-
-          // Then update the product's updatedBy field
-          await tx.product.update({
-            where: { id },
-            data: {
-              updatedBy: { connect: { id: decoded.adminId } }
-            }
           });
           updatedVariants.push(updated);
         } else {
           // Create new variant
-          // First create the variant
           const created = await tx.variant.create({
             data: {
               ...variantData,
               product: { connect: { id } }
             },
-            include: {
-              product: true
-            }
-          });
-
-          // Then update the product's updatedBy field
-          await tx.product.update({
-            where: { id },
-            data: {
-              updatedBy: { connect: { id: decoded.adminId } }
-            }
           });
           updatedVariants.push(created);
         }
       }
 
-      // Update product's total stock and availableSizes
-      const totalStock = updatedVariants.reduce((sum, v) => sum + (v.stock || 0), 0);
-      
-      // Get all unique sizes from updated variants
-      const availableSizes = Array.from(
-        new Set(
-          updatedVariants
-            .map(v => v.size)
-            .filter((size): size is string => size !== null)
-        )
-      ).sort((a, b) => {
-        // Custom sorting for sizes (S, M, L, XL, XXL, etc.)
-        const sizeOrder = ['XXS', 'XS', 'S', 'M', 'L', 'XL', 'XXL', 'XXXL', 'XXXXL'];
-        const indexA = sizeOrder.indexOf(a);
-        const indexB = sizeOrder.indexOf(b);
-        
-        if (indexA !== -1 && indexB !== -1) return indexA - indexB;
-        if (indexA !== -1) return -1;
-        if (indexB !== -1) return 1;
-        return a.localeCompare(b);
-      });
-      
-      // Update the product with new stock and availableSizes
+      // Update product's updatedBy field and recalculate aggregations
       await tx.product.update({
         where: { id },
-        data: { 
-          totalStock,
-          availableSizes: {
-            set: availableSizes
-          },
+        data: {
           updatedBy: { connect: { id: decoded.adminId } }
         }
       });
 
-      return updatedVariants;
+      return { updatedVariants };
+    });
+
+    // Update product aggregations after transaction
+    await updateProductAggregations(id);
+
+    // Fetch the full product with all relations for the response
+    const fullProduct = await prisma.product.findUnique({
+      where: { id },
+      include: {
+        category: {
+          select: {
+            id: true,
+            name: true,
+            slug: true,
+          }
+        },
+        variants: true,
+        createdBy: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            email: true,
+          }
+        },
+        updatedBy: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            email: true,
+          }
+        },
+      },
     });
 
     return successResponse({
       message: 'انواع محصول با موفقیت به‌روزرسانی شدند',
-      variants: result
+      product: fullProduct,
+      variants: result.updatedVariants
     });
   } catch (error) {
     console.error('Error updating product variants:', error);
@@ -478,15 +490,6 @@ export async function DELETE(request: Request, { params }: Params) {
         { status: 401, headers: { 'Content-Type': 'application/json' } }
       );
     }
-    if (!token) {
-      return new NextResponse(
-        JSON.stringify({ 
-          error: 'Unauthorized: Invalid token format',
-          receivedHeader: authHeader
-        }), 
-        { status: 401, headers: { 'Content-Type': 'application/json' } }
-      );
-    }
 
     const decoded = verifyToken(token);
     console.log('DELETE Decoded token:', decoded);
@@ -516,7 +519,6 @@ export async function DELETE(request: Request, { params }: Params) {
     await prisma.product.delete({
       where: { id },
     });
-
 
     return new NextResponse(null, { status: 204 });
   } catch (error) {

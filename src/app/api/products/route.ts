@@ -2,6 +2,22 @@ import { NextResponse } from 'next/server';
 import { PrismaClient, ProductType, Prisma } from '@prisma/client';
 import { verifyToken } from '../../../../lib/auth';
 import { z } from 'zod';
+import { updateProductAggregations } from '@lib/product-utils';
+import { generateSKU } from '@lib/sku-utils';
+import { generateBarcode } from '@lib/barcode-utils';
+
+// Type for Variant creation data
+type VariantCreateInput = {
+  sku?: string; // Made optional since we generate it
+  barcode?: string;
+  size?: string;
+  color?: string;
+  colorHex?: string;
+  price: number;
+  stock: number;
+  isActive?: boolean;
+  image?: string;
+};
 
 type ErrorDetails = Record<string, unknown>;
 type ApiResponseData = Record<string, unknown>;
@@ -67,7 +83,6 @@ const prisma = new PrismaClient();
 
 // Input validation schemas
 const productCreateSchema = z.object({
-  sku: z.string().min(1, 'کد کالا الزامی است'),
   name: z.string().min(1, 'نام محصول الزامی است'),
   slug: z.string().min(1, 'آدرس محصول الزامی است').regex(
     /^[a-z0-9]+(?:-[a-z0-9]+)*$/,
@@ -81,13 +96,11 @@ const productCreateSchema = z.object({
   categoryId: z.string().uuid(),
   tags: z.array(z.string()).optional(),
   gender: z.enum(['MEN', 'WOMEN', 'UNISEX', 'KIDS']).optional(),
-  price: z.number().positive('Price must be positive'),
   compareAtPrice: z.number().positive().optional(),
   costPrice: z.number().positive().optional(),
   isActive: z.boolean().default(false),
   manageStock: z.boolean().default(true),
   mainImage: z.string().url('Main image must be a valid URL'),
-  images: z.array(z.string().url()).optional(),
   videoUrl: z.string().url().optional().or(z.literal('')),
   weight: z.number().int().nonnegative().optional(),
   dimensions: z.string().optional(),
@@ -96,6 +109,17 @@ const productCreateSchema = z.object({
   isNew: z.boolean().default(true),
   metaTitle: z.string().optional(),
   metaDescription: z.string().optional(),
+  variants: z.array(z.object({
+    sku: z.string().optional(), // Made optional since we generate it
+    barcode: z.string().optional(),
+    size: z.string().optional(),
+    color: z.string().optional(),
+    colorHex: z.string().optional(),
+    price: z.number().positive(),
+    stock: z.number().int().nonnegative(),
+    isActive: z.boolean().default(true),
+    image: z.string().url().optional(),
+  })).min(1, 'At least one variant is required'),
 });
 
 export async function GET(request: Request) {
@@ -125,15 +149,6 @@ export async function GET(request: Request) {
         JSON.stringify({ 
           error: 'Unauthorized: No token provided in Authorization header or cookies',
           headers: Object.fromEntries(request.headers.entries())
-        }), 
-        { status: 401, headers: { 'Content-Type': 'application/json' } }
-      );
-    }
-    if (!token) {
-      return new NextResponse(
-        JSON.stringify({ 
-          error: 'Unauthorized: Invalid token format',
-          receivedHeader: authHeader
         }), 
         { status: 401, headers: { 'Content-Type': 'application/json' } }
       );
@@ -177,8 +192,7 @@ export async function GET(request: Request) {
     if (search) {
       where.OR = [
         { name: { contains: search, mode: 'insensitive' as const } },
-        { description: { contains: search, mode: 'insensitive' as const } },
-        { sku: { contains: search, mode: 'insensitive' as const } }
+        { description: { contains: search, mode: 'insensitive' as const } }
       ];
     }
 
@@ -261,15 +275,6 @@ export async function POST(request: Request) {
         { status: 401, headers: { 'Content-Type': 'application/json' } }
       );
     }
-    if (!token) {
-      return new NextResponse(
-        JSON.stringify({ 
-          error: 'Unauthorized: Invalid token format',
-          receivedHeader: authHeader
-        }), 
-        { status: 401, headers: { 'Content-Type': 'application/json' } }
-      );
-    }
 
     const decoded = verifyToken(token);
     console.log('Decoded token:', decoded);
@@ -295,44 +300,8 @@ export async function POST(request: Request) {
       );
     }
 
-    const {
-      sku,
-      name,
-      slug,
-      description,
-      type,
-      categoryId,
-      tags,
-      gender,
-      price,
-      compareAtPrice,
-      costPrice,
-      isActive,
-      manageStock,
-      mainImage,
-      images = [],
-      videoUrl,
-      weight,
-      dimensions,
-      material,
-      isFeatured,
-      isNew,
-      metaTitle,
-      metaDescription,
-    } = validation.data;
-
-    // Check if SKU is unique
-    const existingSku = await prisma.product.findUnique({
-      where: { sku },
-      select: { id: true },
-    });
-
-    if (existingSku) {
-      return new NextResponse(
-        JSON.stringify({ error: 'SKU already exists' }), 
-        { status: 400 }
-      );
-    }
+    // Destructure the data we need
+    const { variants, categoryId, slug, ...productData } = validation.data;
 
     // Check if slug is unique
     const existingSlug = await prisma.product.findUnique({
@@ -347,7 +316,6 @@ export async function POST(request: Request) {
       );
     }
 
-
     // Check if category exists
     const category = await prisma.category.findUnique({
       where: { id: categoryId },
@@ -360,36 +328,95 @@ export async function POST(request: Request) {
       );
     }
 
-    // Create the product
-    const product = await prisma.product.create({
-      data: {
-        sku,
-        name,
-        slug,
-        description,
-        type,
-        category: { connect: { id: categoryId } },
-        tags,
-        gender: gender ? (gender as Gender) : null,
-        price,
-        compareAtPrice,
-        costPrice,
-        isActive,
-        manageStock,
-        mainImage,
-        images,
-        videoUrl: videoUrl || null,
-        weight,
-        dimensions,
-        material,
-        isFeatured,
-        isNew,
-        metaTitle,
-        metaDescription,
-        totalStock: 0, // Initialize with 0, will be updated with variants
-        createdBy: { connect: { id: decoded.adminId } },
-        updatedBy: { connect: { id: decoded.adminId } },
-      },
+    // Generate timestamp ID (YYYYMMDDHHMMSS)
+    const now = new Date();
+    const timestampId = [
+      now.getFullYear(),
+      String(now.getMonth() + 1).padStart(2, '0'),
+      String(now.getDate()).padStart(2, '0'),
+      String(now.getHours()).padStart(2, '0'),
+      String(now.getMinutes()).padStart(2, '0'),
+      String(now.getSeconds()).padStart(2, '0')
+    ].join('');
+
+    // Prepare base product data
+    const productDataInput: Prisma.ProductCreateInput = {
+      id: timestampId,
+      name: productData.name,
+slug,
+      description: productData.description || undefined,
+      type: productData.type,
+      category: { connect: { id: categoryId } },
+      tags: productData.tags || [],
+      gender: productData.gender ? (productData.gender as Gender) : null,
+      price: new Prisma.Decimal(0), // Will be updated by updateProductAggregations
+      compareAtPrice: productData.compareAtPrice ? new Prisma.Decimal(productData.compareAtPrice) : null,
+      costPrice: productData.costPrice ? new Prisma.Decimal(productData.costPrice) : null,
+      isActive: false, // Will be updated by updateProductAggregations
+      manageStock: productData.manageStock ?? true,
+      mainImage: '', // Temporary empty string, will be updated by updateProductAggregations
+      images: [], // Will be updated by updateProductAggregations
+      videoUrl: productData.videoUrl || null,
+      weight: productData.weight || null,
+      dimensions: productData.dimensions || null,
+      material: productData.material || null,
+      isFeatured: productData.isFeatured ?? false,
+      isNew: productData.isNew ?? true,
+      metaTitle: productData.metaTitle || null,
+      metaDescription: productData.metaDescription || null,
+      totalStock: 0, // Will be updated by updateProductAggregations
+      availableSizes: [], // Will be updated by updateProductAggregations
+      createdBy: { connect: { id: decoded.adminId } },
+      updatedBy: { connect: { id: decoded.adminId } },
+    };
+
+    // Create the product with variants in a transaction
+    const [product] = await prisma.$transaction([
+      prisma.product.create({
+        data: {
+          ...productDataInput,
+          variants: {
+            create: variants.map((v: VariantCreateInput, index: number) => {
+              // Generate SKU based on product type and color
+              const generatedSKU = generateSKU(productData.type, v.color);
+              
+              // Generate barcode if not provided
+              const barcode = v.barcode || generateBarcode();
+              
+              return {
+                id: `${timestampId}-${index}`, // Unique ID based on product timestamp and index
+                sku: generatedSKU,
+                barcode,
+                size: v.size || null,
+                color: v.color || null,
+                colorHex: v.colorHex || null,
+                price: v.price ? new Prisma.Decimal(v.price) : new Prisma.Decimal(0),
+                stock: v.stock || 0,
+                isActive: v.isActive ?? true,
+                image: v.image || null,
+              };
+            }),
+          },
+        },
+        include: {
+          category: {
+            select: {
+              id: true,
+              name: true,
+              slug: true,
+            }
+          },
+          variants: true,
+        },
+      })
+    ]);
+
+    // Update product aggregations based on variants
+    await updateProductAggregations(product.id);
+
+    // Fetch the full product with all relations for the response
+    const fullProduct = await prisma.product.findUnique({
+      where: { id: product.id },
       include: {
         category: {
           select: {
@@ -398,10 +425,27 @@ export async function POST(request: Request) {
             slug: true,
           }
         },
+        variants: true,
+        createdBy: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            email: true,
+          }
+        },
+        updatedBy: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            email: true,
+          }
+        },
       },
     });
 
-    return NextResponse.json(product, { status: 201 });
+    return NextResponse.json(fullProduct, { status: 201 });
   } catch (error) {
     console.error('Error creating product:', error);
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
