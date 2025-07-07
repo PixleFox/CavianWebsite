@@ -82,17 +82,18 @@ export async function POST(request: NextRequest) {
       throw Errors.unauthorized('شماره موبایل یا رمز عبور نادرست است');
     }
     
-    // Check for existing active session
-    const existingSession = await prisma.adminSession.findFirst({
+    // Invalidate any existing active sessions for this admin
+    await prisma.adminSession.updateMany({
       where: { 
         adminId: admin.id,
-        expiresAt: { gt: new Date() } // Only check for non-expired sessions
+        expiresAt: { gt: new Date() },
+        isValid: true
+      },
+      data: {
+        isValid: false,
+        expiresAt: new Date()
       }
     });
-
-    if (existingSession) {
-      throw Errors.forbidden('شما در حال حاضر در دستگاه دیگری وارد شده‌اید. لطفاً ابتدا از آن دستگاه خارج شوید.');
-    }
 
     // Generate JWT token
     const token = sign(
@@ -109,17 +110,32 @@ export async function POST(request: NextRequest) {
     const expiresAt = new Date();
     expiresAt.setDate(expiresAt.getDate() + 7);
     
-    // Create session in database
-    await prisma.adminSession.create({
-      data: {
-        adminId: admin.id,
-        tokenHash: token, // In production, you might want to hash the token
-        expiresAt,
-        userAgent: request.headers.get('user-agent') || 'unknown',
-        ipAddress: request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || 'unknown',
-        isValid: true
-      }
-    });
+    // Create session in database within a transaction
+    await prisma.$transaction([
+      // Invalidate any existing sessions
+      prisma.adminSession.updateMany({
+        where: { 
+          adminId: admin.id,
+          expiresAt: { gt: new Date() },
+          isValid: true
+        },
+        data: {
+          isValid: false,
+          expiresAt: new Date()
+        }
+      }),
+      // Create new session
+      prisma.adminSession.create({
+        data: {
+          adminId: admin.id,
+          tokenHash: token,
+          expiresAt,
+          userAgent: request.headers.get('user-agent') || 'unknown',
+          ipAddress: request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || 'unknown',
+          isValid: true
+        }
+      })
+    ]);
 
     // Create response with only the admin data we need
     const adminData = {

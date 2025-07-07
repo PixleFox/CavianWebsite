@@ -6,6 +6,24 @@ import { sendOTP } from '../../../../../../lib/kavenegar';
 import { handleError, Errors } from '../../../../../../lib/error-handler';
 import { isRateLimited } from '../../../../../../lib/rate-limiter';
 import { SuccessMessages } from '../../../../../../lib/success-messages';
+import { normalizePhoneNumber } from '../../../../../../lib/phone-utils';
+
+// Define Admin type for raw query result
+interface Admin {
+  id: number;
+  phoneNumber: string;
+  isActive: boolean;
+  lockedUntil: Date | null;
+  failedLoginAttempts: number;
+  // Add other properties that might be needed
+  email?: string;
+  firstName?: string;
+  lastName?: string;
+  role?: string;
+  createdAt?: Date;
+  updatedAt?: Date;
+  creatorId?: number | null;
+}
 
 // اعتبارسنجی ورودی
 const requestOTPSchema = z.object({
@@ -39,47 +57,85 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const { phoneNumber } = requestOTPSchema.parse(body);
 
-    // نرمال‌سازی شماره به فرمت +98
-    const normalizedPhone = phoneNumber.startsWith('0') ? `+98${phoneNumber.slice(1)}` : phoneNumber;
+    // Normalize the input phone number to standard format (+989...)
+    const normalizedPhone = normalizePhoneNumber(phoneNumber);
+    
+    // Remove any non-digit characters for comparison
+    const cleanPhoneNumber = normalizedPhone.replace(/\D/g, '');
+    
+    // Find admin by phone number using raw query that handles all formats
+    const adminResults = await prisma.$queryRaw<Admin[]>`
+      WITH normalized_phones AS (
+        SELECT 
+          id,
+          "phoneNumber",
+          "isActive",
+          "lockedUntil",
+          "failedLoginAttempts",
+          email,
+          "firstName",
+          "lastName",
+          role,
+          "createdAt",
+          "updatedAt",
+          "creatorId",
+          -- Clean phone number: remove all non-digit characters
+          REGEXP_REPLACE("phoneNumber", '[^0-9]', '', 'g') as clean_phone
+        FROM "Admin"
+      )
+      SELECT 
+        id::integer as id, 
+        "phoneNumber", 
+        "isActive", 
+        "lockedUntil", 
+        "failedLoginAttempts"::integer as "failedLoginAttempts",
+        email,
+        "firstName",
+        "lastName",
+        role,
+        "createdAt",
+        "updatedAt",
+        "creatorId"::integer as "creatorId"
+      FROM normalized_phones
+      WHERE 
+        -- Match any of these formats:
+        -- 1. Exact match with + (e.g., +989123456789)
+        "phoneNumber" = ${normalizedPhone} OR
+        -- 2. Match without + (e.g., 989123456789)
+        "phoneNumber" = ${normalizedPhone.replace('+', '')} OR
+        -- 3. Match with 0 instead of +98 (e.g., 09123456789)
+        (${normalizedPhone.startsWith('+98')} AND "phoneNumber" = '0' || SUBSTRING(${normalizedPhone}, 4)) OR
+        -- 4. Match any other format by cleaning all non-digits
+        clean_phone = ${cleanPhoneNumber} OR
+        -- 5. Match if the stored number is in +98 format but input is 0...
+        (clean_phone = '98' || SUBSTRING(${cleanPhoneNumber}, 2) AND ${cleanPhoneNumber.startsWith('0')})
+      LIMIT 1
+    `;
+    
+    const adminData = adminResults.length > 0 ? adminResults[0] : null;
 
-    // یافتن ادمین با شماره تلفن
-    const admin = await prisma.admin.findUnique({
-      where: { phoneNumber: normalizedPhone },
-    });
-
-    if (!admin) {
-      // Don't reveal that the phone number doesn't exist to prevent enumeration
-      // Return success to not leak information
-      return NextResponse.json(
-        { 
-          success: true, 
-          message: SuccessMessages.OTP_SENT,
-          data: { 
-            phoneNumber: normalizedPhone,
-            cooldown: 120 // 2 minutes in seconds
-          }
-        },
-        { status: 200 }
-      );
+    if (!adminData) {
+      // Return a generic error message that doesn't reveal whether the phone number exists
+      throw Errors.notFound('شماره تلفن وارد شده معتبر نمی‌باشد یا حساب کاربری با این شماره یافت نشد.');
     }
 
     // Check if account is locked
-    if (admin.lockedUntil && new Date() < admin.lockedUntil) {
-      const remainingTime = Math.ceil((admin.lockedUntil.getTime() - Date.now()) / 60000); // in minutes
+    if (adminData.lockedUntil && new Date() < adminData.lockedUntil) {
+      const remainingTime = Math.ceil((adminData.lockedUntil.getTime() - Date.now()) / 60000); // in minutes
       throw Errors.tooManyRequests(
         `حساب شما به دلیل تلاش‌های ناموفق به مدت ${remainingTime} دقیقه قفل شده است.`
       );
     }
 
     // بررسی فعال بودن حساب
-    if (!admin.isActive) {
+    if (!adminData.isActive) {
       throw Errors.authorization('حساب کاربری شما غیرفعال است. با پشتیبانی تماس بگیرید');
     }
 
     // بررسی قفل بودن حساب
-    if (admin.lockedUntil && new Date() < new Date(admin.lockedUntil)) {
+    if (adminData.lockedUntil && new Date() < new Date(adminData.lockedUntil)) {
       throw Errors.authorization(
-        `حساب شما تا ${new Date(admin.lockedUntil).toLocaleString('fa-IR')} قفل است`
+        `حساب شما تا ${new Date(adminData.lockedUntil as Date).toLocaleString('fa-IR')} قفل است`
       );
     }
 
@@ -102,7 +158,7 @@ export async function POST(request: NextRequest) {
     const [recentAttempts, failedAttempts, lastOTPRequest] = await Promise.all([
       prisma.adminSession.count({
         where: {
-          adminId: admin.id,
+          adminId: adminData.id,
           createdAt: {
             gte: new Date(Date.now() - 15 * 60 * 1000), // Last 15 minutes
           },
@@ -110,7 +166,7 @@ export async function POST(request: NextRequest) {
       }),
       prisma.adminSession.count({
         where: {
-          adminId: admin.id,
+          adminId: adminData.id,
           isValid: false,
           createdAt: {
             gte: new Date(Date.now() - 15 * 60 * 1000), // Last 15 minutes
@@ -119,7 +175,7 @@ export async function POST(request: NextRequest) {
       }),
       prisma.adminSession.findFirst({
         where: {
-          adminId: admin.id,
+          adminId: adminData.id,
         },
         orderBy: {
           createdAt: 'desc',
@@ -134,7 +190,7 @@ export async function POST(request: NextRequest) {
     if (failedAttempts >= 4) { // 4 failed attempts + current one = 5
       const lockoutTime = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes lockout
       await prisma.admin.update({
-        where: { id: admin.id },
+        where: { id: adminData.id },
         data: { 
           lockedUntil: lockoutTime,
           failedLoginAttempts: 0, // Reset counter when locking
@@ -166,29 +222,45 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // تولید و ارسال OTP
+    // Generate OTP
     const otp = generateOTP();
-    const sent = await sendOTP(normalizedPhone, otp);
+    
+    // Get the actual phone number from the database to ensure consistency
+    const actualPhoneNumber = adminData.phoneNumber;
+    
+    // Normalize the phone number for sending (ensure it starts with +98)
+    const phoneToSend = actualPhoneNumber.startsWith('0') 
+      ? `+98${actualPhoneNumber.substring(1)}` 
+      : actualPhoneNumber.startsWith('98')
+        ? `+${actualPhoneNumber}`
+        : actualPhoneNumber.startsWith('+')
+          ? actualPhoneNumber
+          : `+98${actualPhoneNumber}`;
+    
+    // Send OTP to the phone number
+    console.log(`Sending OTP to: ${phoneToSend}`);
+    const sent = await sendOTP(phoneToSend, otp);
 
     if (!sent) {
+      console.error(`Failed to send OTP to: ${phoneToSend}`);
       throw new Error('خطا در ارسال OTP. لطفاً دوباره تلاش کنید');
     }
 
-    // هش کردن OTP قبل از ذخیره در دیتابیس
+    // Hash the OTP before storing in the database
     const crypto = await import('crypto');
     const hashedOTP = crypto
       .createHash('sha256')
       .update(otp)
       .digest('hex');
 
-    // ذخیره هش OTP در سشن
+    // Store the hashed OTP in the session
     await prisma.adminSession.create({
       data: {
-        adminId: admin.id,
+        adminId: adminData.id,
         tokenHash: hashedOTP,
         ipAddress: ipAddress,
         userAgent: request.headers.get('user-agent') || 'unknown',
-        expiresAt: new Date(Date.now() + 5 * 60 * 1000), // OTP ۵ دقیقه اعتبار دارد
+        expiresAt: new Date(Date.now() + 5 * 60 * 1000), // OTP valid for 5 minutes
         isValid: true,
       },
     });
@@ -198,7 +270,7 @@ export async function POST(request: NextRequest) {
         success: true, 
         message: SuccessMessages.OTP_SENT,
         data: { 
-          phoneNumber: admin.phoneNumber,
+          phoneNumber: adminData.phoneNumber,
           cooldown: 120 // 2 minutes in seconds
         }
       },

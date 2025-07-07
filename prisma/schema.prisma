@@ -1,14 +1,515 @@
-datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
-}
-
 generator client {
   provider = "prisma-client-js"
   output   = "../node_modules/.prisma/client"
 }
 
-// ========== ENUMS ==========
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Admin {
+  id                  Int             @id @default(autoincrement())
+  email               String?         @unique @db.VarChar(255)
+  phoneNumber         String          @unique @db.VarChar(15)
+  firstName           String
+  lastName            String
+  passwordHash        String          @db.VarChar(255)
+  role                AdminRole       @default(OPERATOR)
+  isActive            Boolean         @default(true)
+  creatorId           Int?
+  createdAt           DateTime        @default(now()) @db.Timestamptz(6)
+  updatedAt           DateTime        @updatedAt @db.Timestamptz(6)
+  lastLoginAt         DateTime?       @db.Timestamptz(6)
+  lastLogoutAt        DateTime?       @db.Timestamptz(6)
+  failedLoginAttempts Int             @default(0)
+  lockedUntil         DateTime?       @db.Timestamptz(6)
+  deletedAt           DateTime?       @db.Timestamptz(6)
+  creator             Admin?          @relation("CreatedAdmins", fields: [creatorId], references: [id])
+  createdAdmins       Admin[]         @relation("CreatedAdmins")
+  sessions            AdminSession[]
+  createdProducts     Product[]       @relation("CreatedProducts")
+  updatedProducts     Product[]       @relation("UpdatedProducts")
+  assignedTickets     Ticket[]        @relation("AssignedTickets")
+  ticketMessages      TicketMessage[]
+
+  @@index([email])
+  @@index([phoneNumber])
+  @@index([creatorId])
+  @@index([createdAt])
+  @@index([lastLoginAt])
+}
+
+model AdminSession {
+  id        Int      @id @default(autoincrement())
+  adminId   Int
+  tokenHash String   @db.VarChar(255)
+  ipAddress String   @db.VarChar(45)
+  userAgent String?  @db.VarChar(255)
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  expiresAt DateTime @db.Timestamptz(6)
+  isValid   Boolean  @default(true)
+  admin     Admin    @relation(fields: [adminId], references: [id], onDelete: Cascade)
+
+  @@index([adminId])
+  @@index([tokenHash])
+  @@index([expiresAt])
+}
+
+model Product {
+  id                  String               @id
+  name                String
+  slug                String               @unique
+  description         String?
+  type                ProductType
+  categoryId          String
+  tags                String[]
+  gender              Gender?
+  price               Decimal              @default(0)
+  compareAtPrice      Decimal?
+  costPrice           Decimal?
+  totalStock          Int                  @default(0)
+  isActive            Boolean              @default(false)
+  manageStock         Boolean              @default(true)
+  mainImage           String?
+  images              String[]
+  videoUrl            String?
+  weight              Int?
+  dimensions          String?
+  material            String?
+  availableSizes      String[]
+  sizeGuideId         String?
+  isFeatured          Boolean              @default(false)
+  isNew               Boolean              @default(true)
+  metaTitle           String?
+  metaDescription     String?
+  createdAt           DateTime             @default(now()) @db.Timestamptz(6)
+  updatedAt           DateTime             @updatedAt @db.Timestamptz(6)
+  publishedAt         DateTime?            @db.Timestamptz(6)
+  createdById         Int?
+  updatedById         Int?
+  accessoryAttributes AccessoryAttributes?
+  clothingAttributes  ClothingAttributes?
+  mugAttributes       MugAttributes?
+  orderItems          OrderItem[]
+  category            Category             @relation(fields: [categoryId], references: [id])
+  createdBy           Admin?               @relation("CreatedProducts", fields: [createdById], references: [id])
+  sizeGuide           SizeGuide?           @relation("ProductSizeGuide", fields: [sizeGuideId], references: [id])
+  updatedBy           Admin?               @relation("UpdatedProducts", fields: [updatedById], references: [id])
+  variants            Variant[]
+
+  @@index([slug])
+  @@index([isActive])
+  @@index([isFeatured])
+  @@index([createdAt])
+}
+
+model Variant {
+  id         String      @id @default(uuid())
+  sku        String
+  barcode    String?
+  size       String?
+  color      String?
+  colorHex   String?
+  price      Decimal?
+  stock      Int         @default(0)
+  isActive   Boolean     @default(true)
+  image      String?
+  productId  String
+  createdAt  DateTime    @default(now()) @db.Timestamptz(6)
+  updatedAt  DateTime    @updatedAt @db.Timestamptz(6)
+  orderItems OrderItem[]
+  product    Product     @relation(fields: [productId], references: [id])
+
+  @@unique([productId, size, color])
+  @@index([sku])
+  @@index([barcode])
+  @@index([isActive])
+}
+
+model ClothingAttributes {
+  id         String  @id @default(uuid())
+  productId  String  @unique
+  fit        String?
+  sleeveType String?
+  neckType   String?
+  pattern    String?
+  care       String?
+  fabricType String?
+  origin     String?
+  product    Product @relation(fields: [productId], references: [id])
+}
+
+model MugAttributes {
+  id             String   @id @default(uuid())
+  productId      String   @unique
+  capacity       String?
+  material       String?
+  microwaveSafe  Boolean?
+  dishwasherSafe Boolean?
+  height         Float?
+  diameter       Float?
+  product        Product  @relation(fields: [productId], references: [id])
+}
+
+model AccessoryAttributes {
+  id            String  @id @default(uuid())
+  productId     String  @unique
+  accessoryType String?
+  size          String?
+  material      String?
+  care          String?
+  product       Product @relation(fields: [productId], references: [id])
+}
+
+model Category {
+  id          String      @id @default(uuid())
+  name        String
+  slug        String      @unique
+  description String?
+  image       String?
+  bannerImage String?
+  parentId    String?
+  isActive    Boolean     @default(true)
+  order       Int         @default(0)
+  featured    Boolean     @default(false)
+  createdAt   DateTime    @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime    @updatedAt @db.Timestamptz(6)
+  parent      Category?   @relation("CategoryHierarchy", fields: [parentId], references: [id])
+  children    Category[]  @relation("CategoryHierarchy")
+  products    Product[]
+  sizeGuides  SizeGuide[] @relation("CategorySizeGuide")
+
+  @@index([slug])
+  @@index([isActive])
+  @@index([order])
+}
+
+model User {
+  passwordHash             String          @db.VarChar(255)
+  role                     UserRole        @default(CUSTOMER)
+  status                   UserStatus      @default(EMAIL_VERIFICATION_PENDING)
+  fullName                 String?         @map("full_name") @db.VarChar(100)
+  firstName                String?         @db.VarChar(50)
+  lastName                 String?         @db.VarChar(50)
+  email                    String?         @unique @db.VarChar(255)
+  phoneNumber              String          @unique @map("phone_number") @db.VarChar(15)
+  birthDate                DateTime?       @map("birth_date") @db.Timestamptz(6)
+  nationalId               String?         @unique @map("national_id") @db.VarChar(10)
+  bankCardNumber           String?         @map("bank_card_number") @db.VarChar(16)
+  referralCode             String?         @unique @map("referral_code") @db.VarChar(20)
+  level                    Int             @default(1) @map("level")
+  mainAddress              String?         @map("main_address") @db.VarChar(255)
+  addressLine1             String?         @db.VarChar(255)
+  addressLine2             String?         @db.VarChar(255)
+  city                     String?         @db.VarChar(100)
+  state                    String?         @db.VarChar(100)
+  country                  String?         @db.VarChar(100)
+  postalCode               String?         @map("postal_code") @db.VarChar(20)
+  emailVerified            Boolean         @default(false) @map("email_verified")
+  phoneVerified            Boolean         @default(false) @map("phone_verified")
+  verificationToken        String?         @map("verification_token") @db.VarChar(255)
+  verificationTokenExpires DateTime?       @map("verification_token_expires") @db.Timestamptz(6)
+  resetToken               String?         @map("reset_token") @db.VarChar(255)
+  resetTokenExpires        DateTime?       @map("reset_token_expires") @db.Timestamptz(6)
+  failedLoginAttempts      Int             @default(0) @map("failed_login_attempts")
+  lockedUntil              DateTime?       @map("locked_until") @db.Timestamptz(6)
+  lastLoginAt              DateTime?       @map("last_login") @db.Timestamptz(6)
+  lastLogoutAt             DateTime?       @map("last_logout") @db.Timestamptz(6)
+  receiveNewsletter        Boolean         @default(false) @map("receive_newsletter")
+  createdAt                DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                DateTime        @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt                DateTime?       @map("deleted_at") @db.Timestamptz(6)
+  id                       Int             @id @default(autoincrement())
+  paymentMethods           PaymentMethod[]
+  addresses                Address[]
+  orders                   Order[]
+  orderHistory             OrderHistory[]
+  orderItems               OrderItem[]
+  orderNotes               OrderNote[]
+  tickets                  Ticket[]
+  ticketMessages           TicketMessage[]
+  sessions                 UserSession[]
+
+  @@index([email])
+  @@index([phoneNumber])
+  @@index([referralCode])
+  @@index([status])
+  @@index([createdAt])
+  @@map("users")
+}
+
+model UserSession {
+  id             String   @id @default(uuid())
+  tokenHash      String   @db.VarChar(255)
+  ipAddress      String   @db.VarChar(45)
+  userAgent      String?  @db.VarChar(255)
+  deviceId       String?  @db.VarChar(255)
+  location       String?  @db.VarChar(100)
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now()) @db.Timestamptz(6)
+  expiresAt      DateTime @db.Timestamptz(6)
+  lastActivityAt DateTime @updatedAt @db.Timestamptz(6)
+  userId         Int
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([tokenHash])
+  @@index([expiresAt])
+  @@index([isActive])
+}
+
+model SizeGuide {
+  id          String     @id @default(uuid())
+  name        String
+  type        SizeType   @default(CLOTHING)
+  description String?
+  content     Json
+  isDefault   Boolean    @default(false)
+  createdAt   DateTime   @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime   @updatedAt @db.Timestamptz(6)
+  products    Product[]  @relation("ProductSizeGuide")
+  categories  Category[] @relation("CategorySizeGuide")
+}
+
+model Order {
+  id                String          @id @default(uuid())
+  orderNumber       String          @unique
+  userId            Int
+  status            OrderStatus     @default(DRAFT)
+  subtotal          Decimal         @default(0)
+  taxAmount         Decimal         @default(0)
+  shippingCost      Decimal         @default(0)
+  discountAmount    Decimal         @default(0)
+  total             Decimal         @default(0)
+  currency          String          @default("Rials") @db.VarChar(20)
+  paymentMethod     PaymentMethod?
+  paymentStatus     PaymentStatus   @default(PENDING)
+  paymentGateway    String?         @db.VarChar(50)
+  paymentId         String?         @db.VarChar(255)
+  paymentRefNum     String?         @db.VarChar(100)
+  cardPan           String?         @db.VarChar(50)
+  bankName          BankName?
+  paidAt            DateTime?       @db.Timestamptz(6)
+  shippingMethod    ShippingMethod?
+  trackingCode      String?         @db.VarChar(100)
+  shippingStatus    String?         @db.VarChar(50)
+  shippedAt         DateTime?       @db.Timestamptz(6)
+  billingAddressId  String?
+  shippingAddressId String?
+  createdAt         DateTime        @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime        @updatedAt @db.Timestamptz(6)
+  billingAddress    Address?        @relation("BillingAddress", fields: [billingAddressId], references: [id])
+  shippingAddress   Address?        @relation("ShippingAddress", fields: [shippingAddressId], references: [id])
+  user              User            @relation(fields: [userId], references: [id])
+  history           OrderHistory[]  @relation("OrderHistory")
+  items             OrderItem[]     @relation("OrderItems")
+  notes             OrderNote[]     @relation("OrderNotes")
+
+  @@index([orderNumber])
+  @@index([userId])
+  @@index([status])
+  @@index([createdAt])
+  @@index([paymentMethod])
+  @@index([paymentId])
+}
+
+model OrderItem {
+  id             String   @id @default(uuid())
+  orderId        String
+  productId      String
+  variantId      String?
+  userId         Int?
+  productName    String
+  variantName    String?
+  sku            String
+  barcode        String?
+  quantity       Int      @default(1)
+  price          Decimal
+  compareAtPrice Decimal?
+  taxRate        Decimal  @default(0)
+  taxAmount      Decimal  @default(0)
+  discountAmount Decimal  @default(0)
+  total          Decimal
+  isReturned     Boolean  @default(false)
+  returnReason   String?
+  createdAt      DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt      DateTime @updatedAt @db.Timestamptz(6)
+  order          Order    @relation("OrderItems", fields: [orderId], references: [id], onDelete: Cascade)
+  product        Product  @relation(fields: [productId], references: [id])
+  user           User?    @relation(fields: [userId], references: [id])
+  variant        Variant? @relation(fields: [variantId], references: [id])
+
+  @@index([orderId])
+  @@index([productId])
+  @@index([variantId])
+  @@index([sku])
+}
+
+model OrderNote {
+  id        String   @id @default(uuid())
+  orderId   String
+  userId    Int?
+  content   String
+  isPublic  Boolean  @default(false)
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  order     Order    @relation("OrderNotes", fields: [orderId], references: [id], onDelete: Cascade)
+  user      User?    @relation(fields: [userId], references: [id])
+
+  @@index([orderId])
+  @@index([userId])
+}
+
+model Ticket {
+  id           String          @id @default(uuid())
+  subject      String
+  description  String
+  status       TicketStatus    @default(OPEN)
+  priority     TicketPriority  @default(MEDIUM)
+  category     TicketCategory
+  userId       Int
+  assignedToId Int?
+  createdAt    DateTime        @default(now()) @db.Timestamptz(6)
+  updatedAt    DateTime        @updatedAt @db.Timestamptz(6)
+  resolvedAt   DateTime?       @db.Timestamptz(6)
+  closedAt     DateTime?       @db.Timestamptz(6)
+  assignedTo   Admin?          @relation("AssignedTickets", fields: [assignedToId], references: [id])
+  user         User            @relation(fields: [userId], references: [id])
+  messages     TicketMessage[]
+
+  @@index([userId])
+  @@index([assignedToId])
+  @@index([status])
+  @@index([priority])
+  @@index([createdAt])
+}
+
+model TicketMessage {
+  id          String      @id @default(uuid())
+  content     String
+  type        MessageType
+  ticketId    String
+  userId      Int?
+  adminId     Int?
+  attachments String[]
+  createdAt   DateTime    @default(now()) @db.Timestamptz(6)
+  admin       Admin?      @relation(fields: [adminId], references: [id])
+  ticket      Ticket      @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  user        User?       @relation(fields: [userId], references: [id])
+
+  @@index([ticketId])
+  @@index([userId])
+  @@index([adminId])
+  @@index([createdAt])
+}
+
+model OrderHistory {
+  id        String      @id @default(uuid())
+  orderId   String
+  userId    Int?
+  status    OrderStatus
+  comment   String?
+  createdAt DateTime    @default(now()) @db.Timestamptz(6)
+  order     Order       @relation("OrderHistory", fields: [orderId], references: [id], onDelete: Cascade)
+  user      User?       @relation(fields: [userId], references: [id])
+
+  @@index([orderId])
+  @@index([userId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model Media {
+  id          String   @id @default(uuid())
+  filename    String   @unique
+  url         String
+  alt         String?  @db.VarChar(255)
+  title       String?  @db.VarChar(255)
+  description String?
+  width       Int?
+  height      Int?
+  size        Int
+  mimeType    String
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(6)
+
+  @@index([filename])
+  @@index([mimeType])
+}
+
+model Address {
+  id             String   @id @default(uuid())
+  userId         Int
+  type           String   @db.VarChar(20)
+  firstName      String   @db.VarChar(50)
+  lastName       String   @db.VarChar(50)
+  company        String?  @db.VarChar(100)
+  addressLine1   String   @db.VarChar(255)
+  addressLine2   String?  @db.VarChar(255)
+  city           String   @db.VarChar(100)
+  state          String?  @db.VarChar(100)
+  postalCode     String   @db.VarChar(20)
+  country        String   @db.VarChar(100)
+  phoneNumber    String?  @db.VarChar(20)
+  isDefault      Boolean  @default(false)
+  createdAt      DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt      DateTime @updatedAt @db.Timestamptz(6)
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  billingOrders  Order[]  @relation("BillingAddress")
+  shippingOrders Order[]  @relation("ShippingAddress")
+
+  @@index([userId])
+  @@index([type])
+  @@index([isDefault])
+}
+
+enum TicketStatus {
+  OPEN
+  IN_PROGRESS
+  AWAITING_RESPONSE
+  RESOLVED
+  CLOSED
+  REOPENED
+}
+
+enum TicketPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum TicketCategory {
+  ORDER_ISSUE
+  PAYMENT_PROBLEM
+  PRODUCT_QUESTION
+  SHIPPING_ISSUE
+  RETURN_REQUEST
+  ACCOUNT_ISSUE
+  TECHNICAL_ISSUE
+  OTHER
+}
+
+enum MessageType {
+  USER
+  ADMIN
+  SYSTEM
+}
+
+enum UserRole {
+  CUSTOMER
+  VIP
+  WHOLESALER
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+  EMAIL_VERIFICATION_PENDING
+  PHONE_VERIFICATION_PENDING
+}
+
 enum AdminRole {
   OWNER
   MANAGER
@@ -61,228 +562,77 @@ enum ClothingSize {
   ONE_SIZE
 }
 
-// ========== MODELS ==========
-model Admin {
-  id                Int            @id @default(autoincrement())
-  email             String?        @unique @db.VarChar(255)
-  phoneNumber       String         @unique @db.VarChar(15)
-  firstName         String         @db.Text
-  lastName          String         @db.Text
-  passwordHash      String         @db.VarChar(255)
-  role              AdminRole      @default(OPERATOR)
-  isActive          Boolean        @default(true)
-  creatorId         Int?
-  creator           Admin?         @relation("CreatedAdmins", fields: [creatorId], references: [id], onDelete: SetNull)
-  createdAdmins     Admin[]        @relation("CreatedAdmins")
-  createdAt         DateTime       @default(now()) @db.Timestamptz
-  updatedAt         DateTime       @updatedAt @db.Timestamptz
-  lastLoginAt       DateTime?      @db.Timestamptz
-  lastLogoutAt      DateTime?      @db.Timestamptz
-  failedLoginAttempts Int          @default(0)
-  lockedUntil       DateTime?      @db.Timestamptz
-  deletedAt         DateTime?      @db.Timestamptz
-  sessions          AdminSession[]
-
-  createdProducts   Product[]      @relation("CreatedProducts")
-  updatedProducts   Product[]      @relation("UpdatedProducts")
-
-  @@index([email])
-  @@index([phoneNumber])
-  @@index([creatorId])
-  @@index([createdAt])
-  @@index([lastLoginAt])
+enum OrderStatus {
+  DRAFT
+  PENDING_PAYMENT
+  PAYMENT_RECEIVED
+  PROCESSING
+  SHIPPED
+  OUT_FOR_DELIVERY
+  DELIVERED
+  CANCELLED
+  REFUNDED
+  PARTIALLY_REFUNDED
+  FAILED
+  ON_HOLD
 }
 
-model AdminSession {
-  id                Int            @id @default(autoincrement())
-  adminId           Int
-  admin             Admin          @relation(fields: [adminId], references: [id], onDelete: Cascade)
-  tokenHash         String         @db.VarChar(255)
-  ipAddress         String         @db.VarChar(45)
-  userAgent         String?        @db.VarChar(255)
-  createdAt         DateTime       @default(now()) @db.Timestamptz
-  expiresAt         DateTime       @db.Timestamptz
-  isValid           Boolean        @default(true)
-
-  @@index([adminId])
-  @@index([tokenHash])
-  @@index([expiresAt])
+enum PaymentMethod {
+  CREDIT_CARD
+  DEBIT_CARD
+  BANK_TRANSFER
+  CASH_ON_DELIVERY
+  WALLET
+  GIFT_CARD
+  CRYPTO
+  OTHER
 }
 
-// ========== PRODUCT MODELS ==========
-model Product {
-  // Core Identifiers
-  id          String    @id
-  name        String
-  slug        String    @unique
-  description String?
-  
-  // Categorization
-  type        ProductType
-  categoryId  String
-  category    Category  @relation(fields: [categoryId], references: [id])
-  tags        String[]
-  gender      Gender?
-  
-  // Pricing (derived from variants)
-  price       Decimal   @default(0)  // Lowest price from active variants
-  compareAtPrice Decimal?            // Highest compareAtPrice from variants
-  costPrice   Decimal?               // Weighted average cost from variants
-  
-  // Inventory
-  variants    Variant[]
-  totalStock  Int       @default(0) // Sum of all variants' stock
-  isActive    Boolean   @default(false)
-  manageStock Boolean   @default(true)
-  
-  // Media
-  mainImage   String?   // First image from variants
-  images      String[]  // All unique images from variants
-  videoUrl    String?   // First video URL from variants
-  
-  // Physical Properties
-  weight      Int?      // in grams
-  dimensions  String?   // "LxWxH" in cm
-  material    String?
-  
-  // Type-Specific Attributes
-  clothingAttributes ClothingAttributes?
-  mugAttributes     MugAttributes?
-  accessoryAttributes AccessoryAttributes?
-  
-  // Sizing
-  availableSizes String[]  // Unique sizes from active variants
-  sizeGuide     SizeGuide? @relation("ProductSizeGuide", fields: [sizeGuideId], references: [id])
-  sizeGuideId   String?
-  
-  // Status & SEO
-  isFeatured  Boolean   @default(false)
-  isNew       Boolean   @default(true)
-  metaTitle   String?
-  metaDescription String?
-  
-  // Timestamps & Audit
-  createdAt   DateTime  @default(now()) @db.Timestamptz
-  updatedAt   DateTime  @updatedAt @db.Timestamptz
-  publishedAt DateTime? @db.Timestamptz
-  createdById Int?
-  createdBy   Admin?    @relation("CreatedProducts", fields: [createdById], references: [id])
-  updatedById Int?
-  updatedBy   Admin?    @relation("UpdatedProducts", fields: [updatedById], references: [id])
-  
-  @@index([slug])
-  @@index([isActive])
-  @@index([isFeatured])
-  @@index([createdAt])
+enum PaymentStatus {
+  PENDING
+  VERIFYING
+  VERIFIED
+  COMPLETED
+  REJECTED
+  CANCELLED
+  REFUNDED
+  FAILED
 }
 
-model Variant {
-  id          String    @id @default(uuid())
-  sku         String
-  barcode     String?
-  
-  // Attributes
-  size        String?   // S, M, L or custom size
-  color       String?
-  colorHex    String?   // #000000
-  
-  // Inventory
-  price       Decimal?  // Override product price
-  stock       Int       @default(0)
-  isActive    Boolean   @default(true)
-  
-  // Media
-  image       String?   // Variant-specific image
-  
-  // Relations
-  product     Product   @relation(fields: [productId], references: [id])
-  productId   String
-  
-  // Timestamps
-  createdAt   DateTime  @default(now()) @db.Timestamptz
-  updatedAt   DateTime  @updatedAt @db.Timestamptz
-  
-  @@unique([productId, size, color])
-  @@index([sku])
-  @@index([barcode])
-  @@index([isActive])
+enum BankName {
+  MELLAT
+  MELLI
+  TEJARAT
+  SADERAT
+  PASARGAD
+  SAMAN
+  PARSIAN
+  EGHTESAD_NOVIN
+  REFAH
+  ANSAR
+  GARDESHGARI
+  KARAFARIN
+  KESHAVARZI
+  MASKAN
+  POSTBANK
+  REFAH_KARAGARAN
+  SANAAT_VA_MADAN
+  SEPAH
+  SHAHR
+  SINA
+  TAAVON
+  TEJARAT_NOVIN
+  TOSSEH
+  TOURISM_BANK
+  VENEZUELA
+  OTHER
 }
 
-// Type-Specific Attributes
-model ClothingAttributes {
-  id          String    @id @default(uuid())
-  product     Product   @relation(fields: [productId], references: [id])
-  productId   String    @unique
-  
-  fit         String?   // Slim, Regular, Oversized
-  sleeveType  String?   // Short, Long, Sleeveless
-  neckType    String?   // Crew, V-neck, Polo
-  pattern     String?   // Solid, Striped, Graphic
-  care        String?   // Washing instructions
-  fabricType  String?   // Cotton, Polyester, etc.
-  origin      String?   // Country of origin
-}
-
-model MugAttributes {
-  id          String    @id @default(uuid())
-  product     Product   @relation(fields: [productId], references: [id])
-  productId   String    @unique
-  
-  capacity    String?   // 11oz, 15oz
-  material    String?   // Ceramic, Glass
-  microwaveSafe Boolean? 
-  dishwasherSafe Boolean?
-  height      Float?    // in cm
-  diameter    Float?    // in cm
-}
-
-model AccessoryAttributes {
-  id          String    @id @default(uuid())
-  product     Product   @relation(fields: [productId], references: [id])
-  productId   String    @unique
-  
-  accessoryType String?  // Keychain, Pin, Sticker
-  size        String?   // Small, Medium, Large
-  material    String?
-  care        String?
-}
-
-model Category {
-  id          String    @id @default(uuid())
-  name        String
-  slug        String    @unique
-  description String?
-  image       String?
-  bannerImage String?
-  parentId    String?
-  parent      Category? @relation("CategoryHierarchy", fields: [parentId], references: [id])
-  children    Category[] @relation("CategoryHierarchy")
-  products    Product[]
-  sizeGuides  SizeGuide[] @relation("CategorySizeGuide")
-  isActive    Boolean   @default(true)
-  order       Int       @default(0)
-  featured    Boolean   @default(false)
-  
-  // Timestamps
-  createdAt   DateTime  @default(now()) @db.Timestamptz
-  updatedAt   DateTime  @updatedAt @db.Timestamptz
-  
-  @@index([slug])
-  @@index([isActive])
-  @@index([order])
-}
-
-model SizeGuide {
-  id          String    @id @default(uuid())
-  name        String
-  type        SizeType  @default(CLOTHING)
-  description String?
-  content     Json      // Size chart data
-  isDefault   Boolean   @default(false)
-  categories  Category[] @relation("CategorySizeGuide")
-  products    Product[] @relation("ProductSizeGuide")
-  
-  // Timestamps
-  createdAt   DateTime  @default(now()) @db.Timestamptz
-  updatedAt   DateTime  @updatedAt @db.Timestamptz
+enum ShippingMethod {
+  STANDARD
+  EXPRESS
+  NEXT_DAY
+  PICKUP
+  IMMIDIATE
+  FREE
 }

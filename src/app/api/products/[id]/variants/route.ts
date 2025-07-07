@@ -1,10 +1,12 @@
-import { NextResponse } from 'next/server';
+import { NextResponse, NextRequest } from 'next/server';
 import { PrismaClient } from '@prisma/client';
 import { z } from 'zod';
 import { updateProductAggregations } from '@lib/product-utils';
 import { generateSKU } from '@lib/sku-utils';
 import { generateBarcode } from '@lib/barcode-utils';
 import { authenticateRequest } from '@lib/api-utils';
+import cacheUtils from '@lib/cache-utils';
+import { productRateLimiter } from '@lib/rate-limiter';
 
 const prisma = new PrismaClient();
 
@@ -31,10 +33,20 @@ const errorResponse = (status: number, message: string, details?: ErrorDetails) 
   );
 };
 
-const successResponse = <T>(data: T, status = 200) => {
+const successResponse = <T>(
+  data: T, 
+  status = 200,
+  headers: Record<string, string> = {}
+) => {
   return NextResponse.json(
     { success: true, data },
-    { status, headers: { 'Content-Type': 'application/json' } }
+    { 
+      status, 
+      headers: { 
+        'Content-Type': 'application/json',
+        ...headers
+      } 
+    }
   );
 };
 
@@ -55,37 +67,88 @@ const variantCreateSchema = z.object({
 
 // Removed unused schema and type
 
-// GET /api/products/:id/variants - List all variants for a product
-export async function GET(
-  request: Request,
-  context: { params: { id: string } }
-) {
-  try {
-    // Authenticate request
-    const auth = await authenticateRequest(request);
-    if (!auth.success) {
-      return auth.response || errorResponse(401, MESSAGES.UNAUTHORIZED);
+// Helper function to fetch variants from database
+async function fetchVariants(productId: string, isAuthenticated: boolean) {
+  // Verify product exists and is active
+  const product = await prisma.product.findUnique({
+    where: { 
+      id: productId,
+      ...(!isAuthenticated ? { isActive: true } : {}) // Only check isActive for non-authenticated users
+    },
+    select: { id: true },
+  });
+  
+  if (!product) {
+    return null;
+  }
+  
+  // Get all variants for the product
+  return await prisma.variant.findMany({
+    where: { 
+      productId,
+      ...(!isAuthenticated ? { isActive: true } : {}) // Only show active variants to public
+    },
+    orderBy: { createdAt: 'asc' },
+    select: isAuthenticated ? undefined : {
+      // For public access, only return non-sensitive fields
+      id: true,
+      size: true,
+      color: true,
+      colorHex: true,
+      price: true,
+      image: true,
+      isActive: true,
+      sku: true,
+      barcode: true,
+      stock: true,
+      createdAt: true,
+      updatedAt: true
     }
+  });
+}
 
-    const { id } = await Promise.resolve(context.params);
+// GET /api/products/:id/variants - List all variants for a product (public)
+export async function GET(
+  request: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  const { id: productId } = params;
+  
+  // Apply rate limiting for listing variants
+  const rateLimit = await productRateLimiter.listVariants(request, productId);
+  if (rateLimit.isRateLimited) {
+    return rateLimit.response;
+  }
+  try {
+    // Check if user is authenticated (for additional data access)
+    const authHeader = request.headers.get('authorization');
+    const isAuthenticated = authHeader?.startsWith('Bearer ');
+    const cacheKey = `variants:${productId}:${isAuthenticated ? 'auth' : 'public'}`;
     
-    // Verify product exists
-    const product = await prisma.product.findUnique({
-      where: { id },
-      select: { id: true },
-    });
+    // Try to get from cache for non-authenticated users
+    if (!isAuthenticated) {
+      const cachedResponse = await cacheUtils.getCachedData(cacheKey, async () => {
+        const variants = await fetchVariants(productId, false);
+        return variants || [];
+      });
+      
+      if (cachedResponse && cachedResponse.length > 0) {
+        return successResponse(cachedResponse, 200, {
+          'X-Cache': 'HIT'
+        });
+      }
+    }
     
-    if (!product) {
+    // Fetch from database
+    const variants = await fetchVariants(productId, Boolean(isAuthenticated));
+    
+    if (!variants) {
       return errorResponse(404, MESSAGES.NOT_FOUND);
     }
     
-    // Get all variants for the product
-    const variants = await prisma.variant.findMany({
-      where: { productId: id },
-      orderBy: { createdAt: 'asc' },
+    return successResponse(variants, 200, {
+      'X-Cache': 'MISS'
     });
-    
-    return successResponse(variants);
     
   } catch (error) {
     console.error('Error fetching variants:', error);
@@ -95,9 +158,14 @@ export async function GET(
 
 // POST /api/products/:id/variants - Add a new variant
 export async function POST(
-  request: Request,
+  request: NextRequest,
   context: { params: { id: string } }
 ) {
+  // Apply rate limiting for creating variants
+  const rateLimit = await productRateLimiter.createVariant(request, context.params.id);
+  if (rateLimit.isRateLimited) {
+    return rateLimit.response;
+  }
   try {
     const { id: productId } = await Promise.resolve(context.params);
     // Authenticate request
@@ -155,14 +223,15 @@ export async function POST(
       },
     });
     
-    // Update product aggregations
-    await updateProductAggregations(productId);
-    
-    // Update product's updatedBy
-    await prisma.product.update({
-      where: { id: productId },
-      data: { updatedBy: { connect: { id: auth.adminId } } },
-    });
+    // Update product aggregations and clear relevant caches
+    await Promise.all([
+      updateProductAggregations(productId),
+      cacheUtils.revalidateProducts(),
+      prisma.product.update({
+        where: { id: productId },
+        data: { updatedBy: { connect: { id: auth.adminId } } },
+      })
+    ]);
     
     return successResponse(variant, 201);
     

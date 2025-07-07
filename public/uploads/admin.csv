@@ -1,0 +1,5 @@
+"id","email","phoneNumber","firstName","lastName","passwordHash","role","isActive","creatorId","createdAt","updatedAt","lastLoginAt","lastLogoutAt","failedLoginAttempts","lockedUntil","deletedAt"
+1,"you@exaple.com","+989123456788","YourFirstName","YourLastName","$2a$10$j8gKNrpjjoibSEtcqZNwru.PAEiZ0DODiaibaD54is.D.c1P.vWDG","OWNER",False,NULL,"2025-04-26 19:03:29.741+03:30","2025-04-27 19:47:49.239+03:30",NULL,NULL,5,"2025-04-26 20:03:59.222+03:30","2025-04-26 21:15:21.6+03:30"
+2,"alirezaeslamibidgoli@gmail.com","+989128442592","alireza"," eslami bidgoli","$2b$10$1CSDctvCKhtdEminbx3cluG1zkbl.gyK13zolegBBzf3Zw2rbvZvy","OWNER",True,1,"2025-04-26 20:58:38.716+03:30","2025-04-27 20:18:01.141+03:30","2025-04-27 20:18:01.138+03:30","2025-04-27 20:17:49.413+03:30",0,NULL,NULL
+3,NULL,"+989303908499","alireza","eslami","$2b$10$QCrXq8hZdC29tD.I9GoGUutLU9L7fNrwjnpmW543xaRTAP4FVHcH2","MANAGER",True,2,"2025-04-27 20:43:38.102+03:30","2025-04-27 20:43:38.102+03:30",NULL,NULL,0,NULL,NULL
+

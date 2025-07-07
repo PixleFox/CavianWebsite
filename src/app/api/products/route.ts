@@ -1,10 +1,15 @@
-import { NextResponse } from 'next/server';
+import { NextResponse, NextRequest } from 'next/server';
 import { PrismaClient, ProductType, Prisma } from '@prisma/client';
 import { verifyToken } from '../../../../lib/auth';
 import { z } from 'zod';
 import { updateProductAggregations } from '@lib/product-utils';
 import { generateSKU } from '@lib/sku-utils';
 import { generateBarcode } from '@lib/barcode-utils';
+import cacheUtils from '@lib/cache-utils';
+import { productRateLimiter } from '@lib/rate-limiter';
+
+// Re-export cache config for use in other files
+export const cacheConfig = cacheUtils.cacheConfig;
 
 // Type for Variant creation data
 type VariantCreateInput = {
@@ -122,55 +127,42 @@ const productCreateSchema = z.object({
   })).min(1, 'At least one variant is required'),
 });
 
-export async function GET(request: Request) {
+export async function GET(request: NextRequest) {
+  // Apply rate limiting for product listing
+  const rateLimit = await productRateLimiter.list(request);
+  if (rateLimit.isRateLimited) {
+    return rateLimit.response;
+  }
   try {
-    // Check for token in Authorization header first
-    let token: string | null = null;
-    const authHeader = request.headers.get('authorization');
-    
-    if (authHeader?.startsWith('Bearer ')) {
-      token = authHeader.split(' ')[1];
-    } else {
-      // Check for token in cookies
-      const cookieHeader = request.headers.get('cookie');
-      if (cookieHeader) {
-        const cookies = Object.fromEntries(
-          cookieHeader.split(';').map(c => {
-            const [key, ...values] = c.trim().split('=');
-            return [key, values.join('=')];
-          })
-        );
-        token = cookies['adminToken'] || null;
-      }
-    }
-    
-    if (!token) {
-      return new NextResponse(
-        JSON.stringify({ 
-          error: 'Unauthorized: No token provided in Authorization header or cookies',
-          headers: Object.fromEntries(request.headers.entries())
-        }), 
-        { status: 401, headers: { 'Content-Type': 'application/json' } }
-      );
-    }
-
-    const decoded = verifyToken(token);
-    console.log('GET Decoded token:', decoded);
-    
-    if (!decoded || !decoded.adminId) {
-      return new NextResponse(
-        JSON.stringify({ 
-          error: 'Unauthorized: Invalid or expired token',
-          decoded: decoded
-        }), 
-        { status: 401, headers: { 'Content-Type': 'application/json' } }
-      );
-    }
-
     const { searchParams } = new URL(request.url);
     
     // Build filter object
     const where: WhereClause = {};
+    
+    // Only show active products to non-authenticated users
+    const authHeader = request.headers.get('authorization');
+    const isAuthenticated = authHeader?.startsWith('Bearer ');
+    const params = Object.fromEntries(searchParams.entries());
+    const cacheKey = cacheUtils.generateCacheKey(params);
+    
+    if (!isAuthenticated) {
+      where.isActive = true;  // Only show active products to public
+      
+      // Try to get cached response for non-authenticated users
+      const cachedResponse = await cacheUtils.getCachedData(cacheKey, async () => {
+        const result = await fetchProducts(where, searchParams);
+        return result;
+      });
+      
+      if (cachedResponse) {
+        return NextResponse.json(cachedResponse, {
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Cache': 'HIT',
+          },
+        });
+      }
+    }
     
     // Add filters from query params
     const categoryId = searchParams.get('categoryId');
@@ -244,7 +236,52 @@ export async function GET(request: Request) {
   }
 }
 
-export async function POST(request: Request) {
+// Helper function to fetch products with pagination
+async function fetchProducts(where: WhereClause, searchParams: URLSearchParams) {
+  const page = parseInt(searchParams.get('page') || '1', 10);
+  const limit = parseInt(searchParams.get('limit') || '20', 10);
+  const skip = (page - 1) * limit;
+
+  const [total, products] = await Promise.all([
+    prisma.product.count({ where }),
+    prisma.product.findMany({
+      where,
+      include: {
+        variants: true,
+        category: {
+          select: {
+            id: true,
+            name: true,
+            slug: true,
+          },
+        },
+      },
+      orderBy: {
+        createdAt: 'desc',
+      },
+      skip,
+      take: limit,
+    }),
+  ]);
+
+  return {
+    success: true,
+    data: products,
+    pagination: {
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit),
+    },
+  };
+}
+
+export async function POST(request: NextRequest) {
+  // Apply rate limiting for product creation
+  const rateLimit = await productRateLimiter.create(request);
+  if (rateLimit.isRateLimited) {
+    return rateLimit.response;
+  }
   try {
     // Check for token in Authorization header first
     let token: string | null = null;
@@ -370,23 +407,43 @@ slug,
       updatedBy: { connect: { id: decoded.adminId } },
     };
 
+    // Check for duplicate variant combinations in the current request
+    const variantKeys = variants.map(v => 
+      `${v.size || 'null'}-${v.color || 'null'}`
+    );
+    
+    const uniqueVariantKeys = new Set(variantKeys);
+    if (variantKeys.length !== uniqueVariantKeys.size) {
+      const duplicates = variantKeys.filter((key, index) => 
+        variantKeys.indexOf(key) !== index
+      );
+      
+      const duplicateDetails = duplicates.map(key => {
+        const [size, color] = key.split('-');
+        return {
+          size: size === 'null' ? 'بدون سایز' : size,
+          color: color === 'null' ? 'بدون رنگ' : color
+        };
+      });
+      
+      return errorResponse(
+        400, 
+        'ترکیب سایز و رنگ تکراری در درخواست وجود دارد',
+        { duplicates: duplicateDetails }
+      );
+    }
+
     // Create the product with variants in a transaction
-    const [product] = await prisma.$transaction([
-      prisma.product.create({
-        data: {
-          ...productDataInput,
-          variants: {
-            create: variants.map((v: VariantCreateInput, index: number) => {
-              // Generate SKU based on product type and color
-              const generatedSKU = generateSKU(productData.type, v.color);
-              
-              // Generate barcode if not provided
-              const barcode = v.barcode || generateBarcode();
-              
-              return {
-                id: `${timestampId}-${index}`, // Unique ID based on product timestamp and index
-                sku: generatedSKU,
-                barcode,
+    try {
+      const [product] = await prisma.$transaction([
+        prisma.product.create({
+          data: {
+            ...productDataInput,
+            variants: {
+              create: variants.map((v: VariantCreateInput, index: number) => ({
+                id: `${timestampId}-${index}`,
+                sku: v.sku || generateSKU(productData.type, v.color),
+                barcode: v.barcode || generateBarcode(),
                 size: v.size || null,
                 color: v.color || null,
                 colorHex: v.colorHex || null,
@@ -394,58 +451,76 @@ slug,
                 stock: v.stock || 0,
                 isActive: v.isActive ?? true,
                 image: v.image || null,
-              };
-            }),
+              })),
+            },
           },
-        },
-        include: {
-          category: {
-            select: {
-              id: true,
-              name: true,
-              slug: true,
+          include: {
+            category: {
+              select: {
+                id: true,
+                name: true,
+                slug: true,
+              }
+            },
+            variants: true,
+          },
+        })
+      ]);
+
+      // Update product aggregations after creation
+      await updateProductAggregations(product.id);
+
+      // Invalidate cache for products
+      await cacheUtils.clearCacheByPattern();
+
+      return successResponse({
+        message: 'محصول با موفقیت ایجاد شد',
+        product: {
+          ...product,
+          variants: product.variants.map(v => ({
+            ...v,
+            price: v.price?.toNumber() || 0
+          }))
+        }
+      }, 201);
+      } catch (error) {
+        console.error('Error creating product:', error);
+        
+        if (error instanceof Prisma.PrismaClientKnownRequestError) {
+          if (error.code === 'P2002') {
+            const target = error.meta?.target as string[] | undefined;
+            if (target?.includes('productId') && target?.includes('size') && target?.includes('color')) {
+              return errorResponse(
+                409,
+                'ترکیب سایز و رنگ تکراری برای این محصول وجود دارد',
+                { 
+                  error: 'DUPLICATE_VARIANT',
+                  fields: ['size', 'color']
+                }
+              );
             }
-          },
-          variants: true,
-        },
-      })
-    ]);
-
-    // Update product aggregations based on variants
-    await updateProductAggregations(product.id);
-
-    // Fetch the full product with all relations for the response
-    const fullProduct = await prisma.product.findUnique({
-      where: { id: product.id },
-      include: {
-        category: {
-          select: {
-            id: true,
-            name: true,
-            slug: true,
+            
+            const field = target?.[0];
+            const message = field === 'sku' ? 'کد کالا تکراری است' : 
+                          field === 'slug' ? 'آدرس محصول تکراری است' : 
+                          'خطا در ذخیره‌سازی محصول';
+            return errorResponse(409, message, { field, code: error.code });
           }
-        },
-        variants: true,
-        createdBy: {
-          select: {
-            id: true,
-            firstName: true,
-            lastName: true,
-            email: true,
+          
+          if (error.code === 'P2025') {
+            return errorResponse(404, 'دسته‌بندی یافت نشد');
           }
-        },
-        updatedBy: {
-          select: {
-            id: true,
-            firstName: true,
-            lastName: true,
-            email: true,
-          }
-        },
-      },
-    });
-
-    return NextResponse.json(fullProduct, { status: 201 });
+        } else if (error instanceof z.ZodError) {
+          return errorResponse(400, 'ورودی نامعتبر است', {
+            errors: error.errors.map(e => ({
+              path: e.path.join('.'),
+              message: e.message
+            }))
+          });
+        }
+        
+        return errorResponse(500, 'خطای سرور. لطفا بعداً تلاش کنید');
+      }
   } catch (error) {
     console.error('Error creating product:', error);
     if (error instanceof Prisma.PrismaClientKnownRequestError) {

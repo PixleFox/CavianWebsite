@@ -1,23 +1,44 @@
-import { NextResponse } from 'next/server';
+import { NextResponse, NextRequest } from 'next/server';
 import { PrismaClient, Prisma } from '@prisma/client';
 import { verifyToken } from '../../../../../lib/auth';
 import { z } from 'zod';
 import { updateProductAggregations } from '@lib/product-utils';
 import { generateSKU } from '@lib/sku-utils';
 import { generateBarcode } from '@lib/barcode-utils';
+import { productRateLimiter } from '@lib/rate-limiter';
 
 type ErrorDetails = Record<string, unknown>;
 type ApiResponseData = Record<string, unknown>;
 
 const MESSAGES = {
-  UNAUTHORIZED: 'دسترسی غیر مجاز. لطفا وارد شوید.',
-  INVALID_TOKEN: 'توکن نامعتبر است.',
-  NOT_FOUND: 'محصول یافت نشد.',
-  PRODUCT_NOT_FOUND: 'محصول یافت نشد.',
-  INVALID_INPUT: 'ورودی نامعتبر است.',
-  INTERNAL_ERROR: 'خطای سرور. لطفا بعدا تلاش کنید.',
-  CATEGORY_NOT_FOUND: 'دسته بندی یافت نشد.',
-  DUPLICATE_SKU: 'کد کالا تکراری است.'
+  // Authentication
+  UNAUTHORIZED: 'دسترسی غیرمجاز. لطفاً ابتدا وارد حساب کاربری خود شوید.',
+  INVALID_TOKEN: 'توکن احراز هویت نامعتبر است. لطفاً دوباره وارد شوید.',
+  
+  // Product related
+  PRODUCT_NOT_FOUND: 'محصول مورد نظر یافت نشد.',
+  PRODUCT_DELETED: 'محصول با موفقیت حذف شد.',
+  PRODUCT_DELETE_SUCCESS: 'محصول با موفقیت حذف شد.',
+  PRODUCT_UPDATE_SUCCESS: 'اطلاعات محصول با موفقیت به‌روزرسانی شد.',
+  PRODUCT_UPDATE_FAILED: 'خطا در به‌روزرسانی اطلاعات محصول.',
+  
+  // Validation
+  INVALID_INPUT: 'اطلاعات ارسالی معتبر نمی‌باشد.',
+  MISSING_REQUIRED_FIELDS: 'لطفاً فیلدهای اجباری را پر کنید.',
+  
+  // Order related
+  PRODUCT_HAS_ORDERS: 'امکان حذف محصول دارای سفارش وجود ندارد.',
+  
+  // Server errors
+  INTERNAL_ERROR: 'خطای سرور. لطفاً لحظاتی دیگر مجدداً تلاش کنید.',
+  DATABASE_ERROR: 'خطا در ارتباط با پایگاه داده.',
+  
+  // Category related
+  CATEGORY_NOT_FOUND: 'دسته‌بندی مورد نظر یافت نشد.',
+  
+  // Variant related
+  DUPLICATE_SKU: 'کد کالای تکراری. لطفاً کد دیگری انتخاب کنید.',
+  VARIANT_VALIDATION_ERROR: 'خطا در اعتبارسنجی اطلاعات تنوع محصول.'
 } as const;
 
 function errorResponse(status: number, message: string, details?: ErrorDetails) {
@@ -49,6 +70,13 @@ function successResponse(data: ApiResponseData, status = 200) {
 
 const prisma = new PrismaClient();
 
+// Helper to validate product ID format
+function isValidProductId(id: string): boolean {
+  // Accept both UUID and numeric IDs
+  return /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(id) ||
+         /^\d+$/.test(id);
+}
+
 type Params = {
   params: {
     id: string;
@@ -69,10 +97,16 @@ const updateVariantsSchema = z.object({
     costPrice: z.number().min(0).optional(),
     quantity: z.number().min(0, 'تعداد نمی‌تواند منفی باشد').default(0),
     isActive: z.boolean().default(true),
+    availableSizes: z.array(z.string()).optional(),
   })).min(1, 'حداقل یک نوع محصول باید وجود داشته باشد')
 });
 
-export async function GET(request: Request, { params }: Params) {
+export async function GET(request: NextRequest, { params }: Params) {
+  // Apply rate limiting for product detail
+  const rateLimit = await productRateLimiter.detail(request, params.id);
+  if (rateLimit.isRateLimited) {
+    return rateLimit.response;
+  }
   try {
     const { id } = params;
     
@@ -153,7 +187,7 @@ export async function GET(request: Request, { params }: Params) {
     });
 
     if (!product) {
-      return errorResponse(404, MESSAGES.NOT_FOUND);
+      return errorResponse(404, MESSAGES.PRODUCT_NOT_FOUND);
     }
 
     // Return the product with its availableSizes
@@ -167,7 +201,12 @@ export async function GET(request: Request, { params }: Params) {
   }
 }
 
-export async function PUT(request: Request, { params }: Params) {
+export async function PUT(request: NextRequest, { params }: Params) {
+  // Apply rate limiting for product update
+  const rateLimit = await productRateLimiter.update(request, params.id);
+  if (rateLimit.isRateLimited) {
+    return rateLimit.response;
+  }
   try {
     // Debug: Log all headers and cookies
     console.log('PUT Request Headers:', Object.fromEntries(request.headers.entries()));
@@ -221,6 +260,31 @@ export async function PUT(request: Request, { params }: Params) {
 
     const { id } = params;
     const body = await request.json();
+    const errors: string[] = [];
+
+    // List of fields that cannot be directly updated via PUT
+    const nonUpdatableFields = [
+      'availableSizes',
+      'price',
+      'totalStock',
+      'images',
+      'createdAt',
+      'updatedAt',
+      'createdById',
+      'updatedById'
+    ];
+
+    // Check for non-updatable fields in the request
+    const invalidUpdates = Object.keys(body).filter(field => 
+      nonUpdatableFields.includes(field)
+    );
+
+    // Add error messages for non-updatable fields
+    invalidUpdates.forEach(field => {
+      errors.push(`Field '${field}' cannot be directly updated. ` + 
+        (field === 'availableSizes' ? 'Update variants instead.' : 
+         field === 'price' ? 'Update variant prices instead.' : ''));
+    });
 
     // Check if product exists
     const existingProduct = await prisma.product.findUnique({
@@ -228,59 +292,165 @@ export async function PUT(request: Request, { params }: Params) {
     });
 
     if (!existingProduct) {
-      return new NextResponse('Product not found', { status: 404 });
+      return errorResponse(404, 'محصول یافت نشد');
     }
 
-    // Update only allowed fields, excluding derived fields (price, totalStock, images, availableSizes)
-    const updateData: Prisma.ProductUpdateInput = {
-      name: body.name,
-      slug: body.slug,
-      description: body.description,
-      type: body.type,
-      tags: body.tags,
-      gender: body.gender,
-      compareAtPrice: body.compareAtPrice,
-      costPrice: body.costPrice,
-      isActive: body.isActive,
-      manageStock: body.manageStock,
-      mainImage: body.mainImage,
-      videoUrl: body.videoUrl,
-      weight: body.weight,
-      dimensions: body.dimensions,
-      material: body.material,
-      isFeatured: body.isFeatured,
-      isNew: body.isNew,
-      metaTitle: body.metaTitle,
-      metaDescription: body.metaDescription,
-      category: body.categoryId ? { connect: { id: body.categoryId } } : undefined,
-      updatedBy: { connect: { id: decoded.adminId } },
-    };
+    // Only include allowed fields in the update
+    const allowedFields = [
+      'name', 'slug', 'description', 'type', 'tags', 'gender',
+      'compareAtPrice', 'costPrice', 'isActive', 'manageStock',
+      'mainImage', 'videoUrl', 'weight', 'dimensions', 'material',
+      'isFeatured', 'isNew', 'metaTitle', 'metaDescription', 'categoryId'
+    ];
 
-    // Update the product
-    const updatedProduct = await prisma.product.update({
-      where: { id },
-      data: updateData,
-      include: {
-        category: {
-          select: {
-            id: true,
-            name: true,
-            slug: true,
+    const updateData: Prisma.ProductUpdateInput = {};
+    
+    // Process allowed fields with proper typing
+    for (const field of allowedFields) {
+      if (field in body) {
+        if (field === 'categoryId' && body[field]) {
+          updateData.category = { connect: { id: body[field] } };
+        } else if (field === 'isActive' && body[field] !== undefined) {
+          updateData.isActive = Boolean(body[field]);
+        } else if (field === 'isFeatured' && body[field] !== undefined) {
+          updateData.isFeatured = Boolean(body[field]);
+        } else if (field === 'isNew' && body[field] !== undefined) {
+          updateData.isNew = Boolean(body[field]);
+        } else if (field === 'manageStock' && body[field] !== undefined) {
+          updateData.manageStock = Boolean(body[field]);
+        } else if (field === 'compareAtPrice' && body[field] !== undefined) {
+          updateData.compareAtPrice = new Prisma.Decimal(body[field]);
+        } else if (field === 'costPrice' && body[field] !== undefined) {
+          updateData.costPrice = new Prisma.Decimal(body[field]);
+        } else if (field === 'weight' && body[field] !== undefined) {
+          updateData.weight = Number(body[field]);
+        } else if (field === 'tags' && Array.isArray(body[field])) {
+          updateData.tags = body[field];
+        } else if (field === 'dimensions' && body[field] !== undefined) {
+          updateData.dimensions = String(body[field]);
+        } else if (field === 'material' && body[field] !== undefined) {
+          updateData.material = String(body[field]);
+        } else if (field === 'videoUrl' && body[field] !== undefined) {
+          updateData.videoUrl = body[field] || null;
+        } else if (field === 'mainImage' && body[field] !== undefined) {
+          updateData.mainImage = body[field] || null;
+        } else if (field === 'metaTitle' && body[field] !== undefined) {
+          updateData.metaTitle = body[field] || null;
+        } else if (field === 'metaDescription' && body[field] !== undefined) {
+          updateData.metaDescription = body[field] || null;
+        } else if (body[field] !== undefined) {
+          // Handle other string fields with type safety
+          if (field === 'name' && body[field] !== undefined) {
+            updateData.name = String(body[field]);
+          } else if (field === 'slug' && body[field] !== undefined) {
+            updateData.slug = String(body[field]);
+          } else if (field === 'description' && body[field] !== undefined) {
+            updateData.description = String(body[field]);
+          } else if (field === 'type' && body[field] !== undefined) {
+            // Use Prisma's enum handling for ProductType
+            updateData.type = { set: body[field] };
+          } else if (field === 'gender' && body[field] !== undefined) {
+            // Use Prisma's enum handling for Gender
+            updateData.gender = body[field] ? { set: body[field] } : { set: null };
+          }
+        }
+      }
+    }
+
+    // Always update the updatedBy reference
+    updateData.updatedBy = { connect: { id: decoded.adminId } };
+
+    // If no valid fields to update and no errors, return success with warning
+    if (Object.keys(updateData).length <= 1 && errors.length === 0) {
+      return successResponse({
+        message: 'هیچ فیلد معتبری برای به‌روزرسانی یافت نشد',
+        updated: false,
+        product: existingProduct
+      });
+    }
+
+    // Start of update operation
+    try {
+      // Update the product
+      await prisma.product.update({
+        where: { id },
+        data: updateData,
+        include: {
+          category: {
+            select: {
+              id: true,
+              name: true,
+              slug: true,
+            },
           },
+          variants: true,
         },
-      },
-    });
+      });
 
-    return NextResponse.json(updatedProduct);
+      // Update product aggregations (price, totalStock, availableSizes, etc.)
+      await updateProductAggregations(id);
+
+      // Get the updated product with all fields
+      const fullProduct = await prisma.product.findUnique({
+        where: { id },
+        include: {
+          category: true,
+          variants: true,
+        },
+      });
+
+      // Prepare response with proper type
+      const response: {
+        success: boolean;
+        message: string;
+        updatedFields: string[];
+        product: typeof fullProduct;
+        warnings?: string[];
+      } = {
+        success: true,
+        message: 'محصول با موفقیت به‌روزرسانی شد',
+        updatedFields: Object.keys(updateData).filter(key => key !== 'updatedBy') as string[],
+        product: fullProduct,
+        ...(errors.length > 0 && { warnings: errors })
+      };
+
+      return successResponse(response);
+    } catch (error) {
+      console.error('Error updating product:', error);
+      
+      if (error instanceof Prisma.PrismaClientKnownRequestError) {
+        if (error.code === 'P2002') {
+          const field = (error.meta?.target as string[])?.[0];
+          const message = field === 'slug' 
+            ? 'این آدرس قبلاً استفاده شده است' 
+            : 'خطای عدم تکراری بودن فیلدها';
+          return errorResponse(409, message, { field });
+        }
+        if (error.code === 'P2025') {
+          return errorResponse(404, 'دسته‌بندی یافت نشد');
+        }
+      }
+      
+      return errorResponse(500, 'خطای سرور در به‌روزرسانی محصول');
+    }
   } catch (error) {
-    console.error('Error updating product:', error);
-    return new NextResponse('Internal Server Error', { status: 500 });
+    console.error('Error in PUT /api/products/[id]:', error);
+    return errorResponse(500, 'خطای سرور در پردازش درخواست');
   }
 }
 
-export async function PATCH(request: Request, { params }: Params) {
+export async function PATCH(request: NextRequest, context: { params: { id: string } }) {
+  // Await the params object first
+  const resolvedParams = await context.params;
+  const productId = resolvedParams.id;
+  
+  // Apply rate limiting for product update
+  const rateLimit = await productRateLimiter.update(request, productId);
+  if (rateLimit.isRateLimited) {
+    return rateLimit.response;
+  }
+  
   try {
-    const { id } = params;
     
     // Check for token in Authorization header first
     let token: string | null = null;
@@ -313,7 +483,7 @@ export async function PATCH(request: Request, { params }: Params) {
 
     // Check if product exists
     const product = await prisma.product.findUnique({
-      where: { id },
+      where: { id: productId },
       include: { variants: true }
     });
 
@@ -336,23 +506,53 @@ export async function PATCH(request: Request, { params }: Params) {
 
     const { variants } = validation.data;
 
+    // Track changes for each variant
+    type VariantUpdateResult = {
+      variantId: string | null;
+      sku: string;
+      changes: Record<string, { from: unknown; to: unknown }>;
+      warnings: string[];
+      status: 'created' | 'updated' | 'unchanged';
+    };
+    
+    const updateResults: VariantUpdateResult[] = [];
+
     // Start a transaction to update variants
     const result = await prisma.$transaction(async (tx) => {
-      // Create or update each variant
       const updatedVariants = [];
       
       for (const variant of variants) {
+        const variantResult: VariantUpdateResult = {
+          variantId: variant.id || null,
+          sku: variant.sku || '',
+          changes: {},
+          warnings: [],
+          status: 'updated'
+        };
+
         // For new variants, generate SKU based on product type and color
-        // For existing variants, keep the existing SKU
-        const sku = variant.id ? variant.sku : generateSKU(product.type, variant.color);
+        const skuValue = variant.id ? variant.sku : generateSKU(product.type, variant.color);
         
         // Generate barcode for new variants if not provided
-        const barcode = variant.barcode || generateBarcode();
+        const barcodeValue = variant.barcode || generateBarcode();
         
-        const variantData = {
+        // Define variant data with explicit types
+        // Create variant data without availableSizes since it's not in the Prisma schema
+        const variantData: {
+          size: string;
+          sku: string;
+          barcode: string;
+          color: string | null;
+          colorHex: string | null;
+          price?: number;
+          compareAtPrice?: number | null;
+          costPrice?: number;
+          stock: number;
+          isActive: boolean;
+        } = {
           size: variant.size,
-          sku, // Use generated SKU for new variants, existing SKU for updates
-          barcode,
+          sku: skuValue, // Use generated SKU for new variants, existing SKU for updates
+          barcode: barcodeValue,
           color: variant.color || null,
           colorHex: variant.colorHex || null,
           price: variant.price,
@@ -360,37 +560,109 @@ export async function PATCH(request: Request, { params }: Params) {
           costPrice: variant.costPrice,
           stock: variant.quantity,
           isActive: variant.isActive,
+          // availableSizes is not stored in the variant model
         };
 
         // Check if variant with this SKU already exists for this product
         const existingVariant = await tx.variant.findFirst({
           where: variant.id 
-            ? { id: variant.id, productId: id }
-            : { sku: variant.sku, productId: id, ...(variant.id ? { id: { not: variant.id } } : {}) }
+            ? { id: variant.id, productId: productId }
+            : { sku: variant.sku, productId: productId, ...(variant.id ? { id: { not: variant.id } } : {}) }
         });
 
         if (existingVariant) {
-          // Update existing variant
-          const updated = await tx.variant.update({
-            where: { id: existingVariant.id },
-            data: variantData,
+          // Define the fields we want to check for changes
+          type FieldToCheck = keyof typeof variantData;
+          const fieldsToCheck: FieldToCheck[] = [
+            'size', 'sku', 'barcode', 'color', 'colorHex', 'price', 
+            'compareAtPrice', 'costPrice', 'stock', 'isActive'
+          ];
+          
+          // Check availableSizes separately since it's not part of the variant model
+          if (variant.availableSizes) {
+            variantResult.warnings.push('Field availableSizes is not currently saved to the database');
+          }
+          
+          // Compare existing values with new values to detect changes
+          const changes: Record<string, { from: unknown; to: unknown }> = {};
+          
+          // Helper function to compare values
+          const valuesAreDifferent = (
+            existing: unknown, 
+            newVal: unknown
+          ): boolean => {
+            // Handle undefined/null cases
+            if (existing === undefined || newVal === undefined) {
+              return existing !== newVal;
+            }
+            
+            // Special handling for arrays
+            if (Array.isArray(existing) && Array.isArray(newVal)) {
+              const sortedExisting = [...existing].sort();
+              const sortedNew = [...newVal].sort();
+              return JSON.stringify(sortedExisting) !== JSON.stringify(sortedNew);
+            }
+            
+            // Special handling for numbers to avoid floating point comparison issues
+            if (typeof existing === 'number' && typeof newVal === 'number') {
+              return Math.abs(existing - newVal) > 0.01;
+            }
+            
+            // Default comparison for other types
+            return JSON.stringify(existing) !== JSON.stringify(newVal);
+          };
+          
+          // Check each field for changes
+          fieldsToCheck.forEach((field: FieldToCheck) => {
+            const existingValue = existingVariant[field as keyof typeof existingVariant];
+            const newValue = variantData[field];
+            
+            if (valuesAreDifferent(existingValue, newValue)) {
+              changes[field] = { from: existingValue, to: newValue };
+            }
           });
-          updatedVariants.push(updated);
+
+          // If no changes, mark as unchanged
+          if (Object.keys(changes).length === 0) {
+            variantResult.status = 'unchanged';
+            variantResult.warnings.push('No changes detected for this variant');
+          } else {
+            // Update existing variant
+            const updated = await tx.variant.update({
+              where: { id: existingVariant.id },
+              data: variantData,
+            });
+            updatedVariants.push(updated);
+            variantResult.changes = changes;
+            variantResult.status = 'updated';
+          }
+          
+          variantResult.variantId = existingVariant.id;
+          variantResult.sku = existingVariant.sku;
         } else {
           // Create new variant
           const created = await tx.variant.create({
             data: {
               ...variantData,
-              product: { connect: { id } }
+              product: { connect: { id: productId } }
             },
           });
           updatedVariants.push(created);
+          variantResult.variantId = created.id;
+          variantResult.sku = created.sku;
+          variantResult.status = 'created';
+          variantResult.changes = Object.keys(variantData).reduce((acc, key) => ({
+            ...acc,
+            [key]: { from: null, to: variantData[key as keyof typeof variantData] }
+          }), {});
         }
+
+        updateResults.push(variantResult);
       }
 
       // Update product's updatedBy field and recalculate aggregations
       await tx.product.update({
-        where: { id },
+        where: { id: productId },
         data: {
           updatedBy: { connect: { id: decoded.adminId } }
         }
@@ -400,11 +672,11 @@ export async function PATCH(request: Request, { params }: Params) {
     });
 
     // Update product aggregations after transaction
-    await updateProductAggregations(id);
+    await updateProductAggregations(productId);
 
     // Fetch the full product with all relations for the response
     const fullProduct = await prisma.product.findUnique({
-      where: { id },
+      where: { id: productId },
       include: {
         category: {
           select: {
@@ -433,10 +705,46 @@ export async function PATCH(request: Request, { params }: Params) {
       },
     });
 
+    // Generate summary message
+    const updatedCount = updateResults.filter(r => r.status === 'updated').length;
+    const createdCount = updateResults.filter(r => r.status === 'created').length;
+    const unchangedCount = updateResults.filter(r => r.status === 'unchanged').length;
+
+    let message = '';
+    if (createdCount > 0 && updatedCount > 0) {
+      message = `${createdCount} مورد ایجاد و ${updatedCount} مورد به‌روزرسانی شد`;
+    } else if (createdCount > 0) {
+      message = `${createdCount} مورد جدید با موفقیت ایجاد شد`;
+    } else if (updatedCount > 0) {
+      message = `${updatedCount} مورد با موفقیت به‌روزرسانی شد`;
+    } else if (unchangedCount > 0) {
+      message = 'تغییری در اطلاعات ایجاد نشد';
+    } else {
+      message = 'عملیات با موفقیت انجام شد';
+    }
+
+    // Add warning if some variants were unchanged
+    if (unchangedCount > 0) {
+      message += ` (${unchangedCount} مورد بدون تغییر باقی ماند)`;
+    }
+
     return successResponse({
-      message: 'انواع محصول با موفقیت به‌روزرسانی شدند',
+      message,
       product: fullProduct,
-      variants: result.updatedVariants
+      variants: result.updatedVariants,
+      summary: {
+        total: updateResults.length,
+        created: createdCount,
+        updated: updatedCount,
+        unchanged: unchangedCount,
+      },
+      details: updateResults.map(result => ({
+        variantId: result.variantId,
+        sku: result.sku,
+        status: result.status,
+        changes: result.changes,
+        warnings: result.warnings
+      }))
     });
   } catch (error) {
     console.error('Error updating product variants:', error);
@@ -452,77 +760,142 @@ export async function PATCH(request: Request, { params }: Params) {
   }
 }
 
-export async function DELETE(request: Request, { params }: Params) {
+export async function DELETE(request: NextRequest, { params }: { params: { id: string } }) {
+  // Await the params object
+  const resolvedParams = await params;
+  const productId = resolvedParams.id;
+  
+  console.log('DELETE request received for product ID:', productId);
+  
   try {
-    // Debug: Log all headers and cookies
-    console.log('DELETE Request Headers:', Object.fromEntries(request.headers.entries()));
+    // Rate limiting check
+    const rateLimit = await productRateLimiter.delete(request, productId);
+    if (rateLimit.isRateLimited) {
+      console.log('Rate limited:', rateLimit);
+      return rateLimit.response;
+    }
     
-    // Check for token in Authorization header first
+    // Authentication check
     let token: string | null = null;
     const authHeader = request.headers.get('authorization');
-    console.log('DELETE Auth Header:', authHeader);
     
-    if (authHeader && authHeader.startsWith('Bearer ')) {
+    if (authHeader?.startsWith('Bearer ')) {
       token = authHeader.split(' ')[1];
     } else {
-      // Check for token in cookies
       const cookieHeader = request.headers.get('cookie');
-      console.log('DELETE Cookie Header:', cookieHeader);
-      
       if (cookieHeader) {
         const cookies = cookieHeader.split(';').reduce((acc: Record<string, string>, cookie) => {
           const [key, value] = cookie.trim().split('=');
           acc[key] = value;
           return acc;
         }, {});
-        
         token = cookies['adminToken'] || null;
-        console.log('Extracted token from cookies:', token ? 'Token found' : 'No token found');
       }
     }
     
     if (!token) {
-      return new NextResponse(
-        JSON.stringify({ 
-          error: 'Unauthorized: No token provided in Authorization header or cookies',
-          headers: Object.fromEntries(request.headers.entries())
-        }), 
-        { status: 401, headers: { 'Content-Type': 'application/json' } }
-      );
+      console.log('No authentication token provided');
+      return errorResponse(401, MESSAGES.UNAUTHORIZED);
     }
 
     const decoded = verifyToken(token);
-    console.log('DELETE Decoded token:', decoded);
-    
-    if (!decoded || !decoded.adminId) {
-      return new NextResponse(
-        JSON.stringify({ 
-          error: 'Unauthorized: Invalid or expired token',
-          decoded: decoded
-        }), 
-        { status: 401, headers: { 'Content-Type': 'application/json' } }
-      );
+    if (!decoded?.adminId) {
+      console.log('Invalid or expired token');
+      return errorResponse(401, MESSAGES.INVALID_TOKEN);
     }
 
-    const { id } = params;
+    // Use the already extracted productId
+    console.log('Processing delete for product ID:', productId);
+
+    // Validate the ID format
+    if (!productId || !isValidProductId(productId)) {
+      console.error('Invalid product ID format:', productId);
+      return errorResponse(400, 'شناسه محصول نامعتبر است.');
+    }
 
     // Check if product exists
-    const existingProduct = await prisma.product.findUnique({
-      where: { id },
-    });
-
-    if (!existingProduct) {
-      return new NextResponse('Product not found', { status: 404 });
+    console.log('Checking if product exists with ID:', productId);
+    let existingProduct;
+    try {
+      existingProduct = await prisma.product.findUnique({
+        where: { id: productId },
+        include: {
+          variants: {
+            select: { id: true }
+          },
+          _count: {
+            select: {
+              orderItems: true
+            }
+          }
+        },
+      });
+      
+      console.log('Product lookup result:', existingProduct ? 'Found' : 'Not found');
+      if (!existingProduct) {
+        console.log('Product not found with ID:', productId);
+        return errorResponse(404, MESSAGES.PRODUCT_NOT_FOUND);
+      }
+    } catch (dbError) {
+      console.error('Database error when finding product:', dbError);
+      return errorResponse(500, 'خطا در ارتباط با پایگاه داده');
     }
 
-    // Delete the product (Prisma will handle cascading deletes)
-    await prisma.product.delete({
-      where: { id },
+    // Product exists, proceed with deletion
+    console.log('Product found, checking for orders...');
+
+    // Check if product has any orders
+    if (existingProduct._count.orderItems > 0) {
+      return errorResponse(400, MESSAGES.PRODUCT_HAS_ORDERS);
+    }
+
+    console.log('Starting transaction for product deletion');
+    // Use a transaction to ensure data consistency
+    await prisma.$transaction(async (prisma) => {
+      // First delete all variants
+      if (existingProduct.variants.length > 0) {
+        await prisma.variant.deleteMany({
+          where: { productId: productId }
+        });
+      }
+
+      // Then delete the product
+      await prisma.product.delete({
+        where: { id: productId }
+      });
     });
 
-    return new NextResponse(null, { status: 204 });
+    console.log('Updating product aggregations after deletion');
+    try {
+      await updateProductAggregations(productId);
+      console.log('Product aggregations updated successfully');
+    } catch (error) {
+      console.error('Error updating aggregations:', error);
+      // Continue even if aggregations update fails
+    }
+
+    return successResponse({
+      message: MESSAGES.PRODUCT_DELETE_SUCCESS,
+      productId: productId
+    }, 200);
   } catch (error) {
-    console.error('Error deleting product:', error);
-    return new NextResponse('Internal Server Error', { status: 500 });
+    console.error('Error in DELETE /api/products/[id]:', error);
+    
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      console.error('Prisma error code:', error.code);
+      
+      if (error.code === 'P2025') {
+        return errorResponse(404, MESSAGES.PRODUCT_NOT_FOUND);
+      }
+      if (error.code === 'P2003') {
+        return errorResponse(400, 'امکان حذف محصول به دلیل وجود سفارش‌های مرتبط وجود ندارد.');
+      }
+      
+      return errorResponse(500, 'خطای پایگاه داده', { code: error.code });
+    }
+    
+    const errorMessage = error instanceof Error ? error.message : 'خطای ناشناخته';
+    console.error('Unexpected error:', error);
+    return errorResponse(500, MESSAGES.INTERNAL_ERROR, { error: errorMessage });
   }
 }

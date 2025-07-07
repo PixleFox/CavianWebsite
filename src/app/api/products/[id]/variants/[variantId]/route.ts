@@ -1,8 +1,9 @@
-import { NextResponse } from 'next/server';
+import { NextResponse, NextRequest } from 'next/server';
 import { PrismaClient } from '@prisma/client';
 import { z } from 'zod';
 import { updateProductAggregations } from '@lib/product-utils';
 import { authenticateRequest } from '@lib/api-utils';
+import { productRateLimiter } from '@lib/rate-limiter';
 
 const prisma = new PrismaClient();
 
@@ -55,17 +56,22 @@ const variantUpdateSchema = z.object({
 
 // GET /api/products/:id/variants/:variantId - Get a specific variant
 export async function GET(
-  request: Request,
-  { params }: { params: { id: string; variantId: string } }
+  request: NextRequest,
+  context: { params: { id: string; variantId: string } }
 ) {
+  const { id: productId, variantId } = await context.params;
+  
+  // Apply rate limiting for variant detail
+  const rateLimit = await productRateLimiter.detail(request, productId);
+  if (rateLimit.isRateLimited) {
+    return rateLimit.response;
+  }
   try {
     // Authenticate request
     const auth = await authenticateRequest(request);
     if (!auth.success) {
       return auth.response || errorResponse(401, MESSAGES.UNAUTHORIZED);
     }
-
-    const { id: productId, variantId } = params;
     
     // Find the variant
     const variant = await prisma.variant.findUnique({
@@ -86,17 +92,29 @@ export async function GET(
 
 // PATCH /api/products/:id/variants/:variantId - Partially update a variant
 export async function PATCH(
-  request: Request,
+  request: NextRequest,
   context: { params: { id: string; variantId: string } }
 ) {
+  const { id: productId, variantId } = await context.params;
+  
+  // Apply rate limiting for variant update
+  const rateLimit = await productRateLimiter.updateVariant(
+    request, 
+    productId, 
+    variantId
+  );
+  if (rateLimit.isRateLimited) {
+    return rateLimit.response;
+  }
   let transaction;
   try {
-    const { id: productId, variantId } = await Promise.resolve(context.params);
-// Authenticate request
-const auth = await authenticateRequest(request);
-if (!auth.success) {
-  return auth.response || errorResponse(401, MESSAGES.UNAUTHORIZED);
-}
+    const { id: productId, variantId } = await context.params;
+    
+    // Authenticate request
+    const auth = await authenticateRequest(request);
+    if (!auth.success) {
+      return auth.response || errorResponse(401, MESSAGES.UNAUTHORIZED);
+    }
     
     // Validate request body
     const body = await request.json();
@@ -203,12 +221,23 @@ await tx.product.update({
 
 // PUT /api/products/:id/variants/:variantId - Fully update a variant
 export async function PUT(
-  request: Request,
+  request: NextRequest,
   context: { params: { id: string; variantId: string } }
 ) {
+  const { id: productId, variantId } = await context.params;
+  
+  // Apply rate limiting for variant update
+  const rateLimit = await productRateLimiter.updateVariant(
+    request, 
+    productId, 
+    variantId
+  );
+  if (rateLimit.isRateLimited) {
+    return rateLimit.response;
+  }
   let transaction;
   try {
-    const { id: productId, variantId } = await Promise.resolve(context.params);
+    const { id: productId, variantId } = await context.params;
     
     // Authenticate request
     const auth = await authenticateRequest(request);
@@ -313,17 +342,31 @@ export async function PUT(
 
 // DELETE /api/products/:id/variants/:variantId - Delete a variant
 export async function DELETE(
-  request: Request,
+  request: NextRequest,
   context: { params: { id: string; variantId: string } }
 ) {
+  // Await the params object first
+  const { id: productId, variantId } = await context.params;
+  
+  // Apply rate limiting for variant deletion
+  const rateLimit = await productRateLimiter.deleteVariant(
+    request, 
+    productId, 
+    variantId
+  );
+  
+  if (rateLimit.isRateLimited) {
+    return rateLimit.response;
+  }
+  
+  // Authenticate request
+  const auth = await authenticateRequest(request);
+  if (!auth.success) {
+    return auth.response || errorResponse(401, MESSAGES.UNAUTHORIZED);
+  }
+  
   let transaction;
   try {
-    const { id: productId, variantId } = await Promise.resolve(context.params);
-    // Authenticate request
-    const auth = await authenticateRequest(request);
-    if (!auth.success) {
-      return auth.response || errorResponse(401, MESSAGES.UNAUTHORIZED);
-    }
     
     // Start a transaction
     transaction = await prisma.$transaction(async (tx) => {
