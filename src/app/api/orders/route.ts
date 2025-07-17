@@ -94,12 +94,29 @@ const orderCreateSchema = z.object({
 // Helper to get user from token
 async function getAuthenticatedUser(request: Request) {
   const auth = await authenticateRequest(request);
-  if (!auth.success || !auth.adminId) return null;
   
-  return await prisma.admin.findUnique({
-    where: { id: auth.adminId },
-    select: { id: true, role: true, email: true }
-  });
+  // If authentication failed, return null
+  if (!auth.success) return null;
+  
+  // If admin, return admin info
+  if (auth.adminId) {
+    return {
+      id: auth.adminId,
+      role: auth.role || 'ADMIN',
+      type: 'admin'
+    };
+  }
+
+  // If user, return user info
+  if (auth.userId) {
+    return {
+      id: auth.userId,
+      role: auth.role || 'USER',
+      type: 'user'
+    };
+  }
+
+  return null;
 }
 
 // Handler for GET /api/orders - List orders with filters
@@ -146,7 +163,7 @@ async function handleGet(request: Request) {
     const userId = searchParams.get('userId');
     if (userId) {
       // Only allow admins to filter by any user ID
-      if (user.role !== 'OWNER' && user.role !== 'MANAGER') {
+      if (user.role !== 'ADMIN') {
         return errorResponse(403, MESSAGES.FORBIDDEN);
       }
       where.userId = parseInt(userId);
@@ -260,294 +277,324 @@ async function handlePost(request: Request) {
       });
     }
     
-    const { items, shippingAddress, billingAddress, paymentMethod, shippingMethod, useShippingAsBilling } = validation.data;
+    const { items, shippingAddress, billingAddress, useShippingAsBilling } = validation.data;
     
     // Start a transaction to ensure data consistency
-    return await prisma.$transaction(async (tx) => {
-      // 1. Verify all products and variants exist and have sufficient stock
-      const productIds = [...new Set(items.map(item => item.productId))];
-      const variantIds = items.map(item => item.variantId).filter(Boolean) as string[];
-      
-      const products = await tx.product.findMany({
-        where: { id: { in: productIds } },
-        include: { 
-          variants: { 
-            where: { id: { in: variantIds } },
-            include: { product: true }
-          } 
-        }
-      });
-      
-      // Check if all products exist
-      const missingProductIds = productIds.filter(id => !products.some(p => p.id === id));
-      if (missingProductIds.length > 0) {
-        return errorResponse(404, 'برخی از محصولات یافت نشدند', {
-          missingProductIds
+    const result = await prisma.$transaction(async (tx) => {
+      try {
+        // 1. Verify all products and variants exist and have sufficient stock
+        const productIds = [...new Set(items.map(item => item.productId))];
+        const variantIds = items.map(item => item.variantId).filter(Boolean) as string[];
+        
+        const products = await tx.product.findMany({
+          where: { id: { in: productIds } },
+          include: { 
+            variants: { 
+              where: { id: { in: variantIds } },
+              include: { product: true }
+            } 
+          }
         });
-      }
-      
-      // Check if all variants exist and have sufficient stock
-      const stockIssues: Array<{
-        productId: string;
-        variantId?: string;
-        available: number;
-        requested: number;
-      }> = [];
-      
-      // Type for enriched order items
-      type EnrichedItem = {
-        product: {
-          id: string;
-          name: string;
-          sku: string;
-          price: number | null;
-          compareAtPrice: number | null;
-        };
-        variant: {
-          id: string;
-          sku: string;
-          price: number | null;
-          compareAtPrice: number | null;
-          stock: number;
-          [key: string]: unknown;
-        } | null;
-        quantity: number;
-        price: number;
-        compareAtPrice: number | null;
-        taxRate: number;
-        taxAmount: number;
-        discountAmount: number;
-        total: number;
-      };
-      
-      // Initialize enriched items array
-      const enrichedItems: EnrichedItem[] = [];
-      
-      for (const item of items) {
-        const product = products.find(p => p.id === item.productId);
-        if (!product) continue;
         
-        // For variant products
-        if (item.variantId) {
-          const variant = product.variants.find(v => v.id === item.variantId);
-          if (!variant) {
-            return errorResponse(400, MESSAGES.INVALID_INPUT, { error: `Variant not found: ${item.variantId}` });
-          }
-          
-          // Convert Decimal to number for calculations
-          const variantPrice = variant.price ? toNumber(variant.price) : toNumber(product.price);
-          
-          // Get compareAtPrice from product since Variant doesn't have it
-          const variantCompareAtPrice = product.compareAtPrice ? 
-            toNumber(product.compareAtPrice) : 
-            null;
-          
-          // Check stock
-          if (variant.stock < item.quantity) {
-            stockIssues.push({
-              productId: product.id,
-              variantId: variant.id,
-              available: variant.stock,
-              requested: item.quantity
-            });
-          }
-          
-          // Create a product data object with the required properties
-          const productPrice = product.price ? toNumber(product.price) : 0;
-          const productCompareAtPrice = product.compareAtPrice ? toNumber(product.compareAtPrice) : null;
-          // Use a type assertion to safely access the sku property
-          const productSku = (product as { sku?: string }).sku || '';
-          
-          enrichedItems.push({
-            product: {
-              id: product.id,
-              name: product.name,
-              sku: productSku,
-              price: productPrice,
-              compareAtPrice: productCompareAtPrice
-            },
-            variant: {
-              ...variant,
-              price: variantPrice,
-              compareAtPrice: variantCompareAtPrice
-            },
-            quantity: item.quantity,
-            price: variantPrice,
-            compareAtPrice: variantCompareAtPrice,
-            taxRate: 0, // TODO: Calculate tax
-            taxAmount: 0,
-            discountAmount: 0,
-            total: variantPrice * item.quantity
-          });
-        
-        } else {
-          // Handle products without variants
-          if (product.totalStock < item.quantity) {
-            stockIssues.push({
-              productId: product.id,
-              available: product.totalStock,
-              requested: item.quantity
-            });
-          }
-          
-          // Convert Decimal to number for calculations
-          const productPrice = toNumber(product.price);
-          const productCompareAtPrice = product.compareAtPrice ? toNumber(product.compareAtPrice) : null;
-          
-          enrichedItems.push({
-            product: {
-              id: product.id,
-              name: product.name,
-              sku: (product as { sku?: string }).sku || '',
-              price: productPrice,
-              compareAtPrice: productCompareAtPrice
-            },
-            variant: null,
-            quantity: item.quantity,
-            price: productPrice,
-            compareAtPrice: productCompareAtPrice,
-            taxRate: 0, // TODO: Calculate tax
-            taxAmount: 0,
-            discountAmount: 0,
-            total: productPrice * item.quantity
+        // Check if all products exist
+        const missingProductIds = productIds.filter(id => !products.some(p => p.id === id));
+        if (missingProductIds.length > 0) {
+          throw errorResponse(404, 'برخی از محصولات یافت نشدند', {
+            missingProductIds
           });
         }
-      }
-      
-      if (stockIssues.length > 0) {
-        return errorResponse(400, MESSAGES.INSUFFICIENT_STOCK, { stockIssues });
-      }
-      
-      // Calculate order totals
-      const subtotal = enrichedItems.reduce((sum, item) => {
-        const price = toNumber(item.price);
-        return sum + (price * item.quantity);
-      }, 0);
-      const taxAmount = enrichedItems.reduce((sum, item) => sum + item.taxAmount, 0);
-      const shippingCost = 0; // TODO: Calculate shipping cost based on method and address
-      const discountAmount = 0; // TODO: Apply discounts
-      const total = subtotal + taxAmount + shippingCost - discountAmount;
-      
-      // Create addresses
-      const shippingAddr = await tx.address.create({
-        data: {
-          ...shippingAddress,
-          userId: user.id,
-          type: 'SHIPPING',
-          isDefault: false
-        }
-      });
-      
-      // Create billing address
-      const billingAddr = await tx.address.create({
-        data: useShippingAsBilling 
-          ? { ...shippingAddress, type: 'BILLING', isDefault: false, userId: user.id }
-          : { ...billingAddress!, type: 'BILLING', isDefault: false, userId: user.id }
-      });
-
-      // Prepare order items data
-      const orderItemsData = enrichedItems.map(item => {
-        const price = toNumber(item.price);
-        const total = price * item.quantity;
-        const variantName = item.variant 
-          ? `${item.variant.color || ''} ${item.variant.size || ''}`.trim() || null
-          : null;
         
-        return {
-          productId: item.product.id,
-          variantId: item.variant?.id,
-          userId: user.id,
-          productName: item.product.name,
-          variantName: variantName,
-          sku: item.variant?.sku || 'SKU-NOT-AVAILABLE',
-          barcode: item.variant?.barcode ? String(item.variant.barcode) : null,
-          quantity: item.quantity,
-          price: price,
-          compareAtPrice: item.compareAtPrice !== null && item.compareAtPrice !== undefined 
-            ? toNumber(item.compareAtPrice) 
-            : null,
-          taxRate: item.taxRate,
-          taxAmount: item.taxAmount,
-          discountAmount: item.discountAmount,
-          total: total
+        // Check if all variants exist and have sufficient stock
+        const stockIssues: Array<{
+          productId: string;
+          variantId?: string;
+          available: number;
+          requested: number;
+        }> = [];
+        
+        // Type for enriched order items
+        type EnrichedItem = {
+          product: {
+            id: string;
+            name: string;
+            sku: string;
+            price: number | null;
+            compareAtPrice: number | null;
+          };
+          variant: {
+            id: string;
+            sku: string;
+            price: number | null;
+            compareAtPrice: number | null;
+            stock: number;
+            [key: string]: unknown;
+          } | null;
+          quantity: number;
+          price: number;
+          compareAtPrice: number | null;
+          taxRate: number;
+          taxAmount: number;
+          discountAmount: number;
+          total: number;
         };
-      });
-
-      // Create the order
-      const order = await tx.order.create({
-        data: {
-          orderNumber: `ORD-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-          userId: user.id,
-          status: OrderStatus.PENDING_PAYMENT,
-          subtotal,
-          taxAmount,
-          shippingCost,
-          discountAmount,
-          total,
-          paymentMethod,
-          paymentStatus: PaymentStatus.PENDING,
-          shippingMethod,
-          shippingAddressId: shippingAddr.id,
-          billingAddressId: billingAddr.id,
-          items: {
-            create: orderItemsData.map(item => ({
-              ...item,
-              // Add the required product relation
+        
+        // Initialize enriched items array
+        const enrichedItems: EnrichedItem[] = [];
+        
+        for (const item of items) {
+          const product = products.find(p => p.id === item.productId);
+          if (!product) continue;
+          
+          // For variant products
+          if (item.variantId) {
+            const variant = product.variants.find(v => v.id === item.variantId);
+            if (!variant) {
+              throw errorResponse(400, MESSAGES.INVALID_INPUT, { error: `Variant not found: ${item.variantId}` });
+            }
+            
+            // Convert Decimal to number for calculations
+            const variantPrice = variant.price ? toNumber(variant.price) : toNumber(product.price);
+            
+            // Get compareAtPrice from product since Variant doesn't have it
+            const variantCompareAtPrice = product.compareAtPrice ? 
+              toNumber(product.compareAtPrice) : 
+              null;
+            
+            // Check stock
+            if (variant.stock < item.quantity) {
+              stockIssues.push({
+                productId: product.id,
+                variantId: variant.id,
+                available: variant.stock,
+                requested: item.quantity
+              });
+            }
+            
+            // Create a product data object with the required properties
+            const productPrice = product.price ? toNumber(product.price) : 0;
+            const productCompareAtPrice = product.compareAtPrice ? toNumber(product.compareAtPrice) : null;
+            // Use a type assertion to safely access the sku property
+            const productSku = (product as { sku?: string }).sku || '';
+            
+            enrichedItems.push({
               product: {
-                connect: { id: item.productId }
+                id: product.id,
+                name: product.name,
+                sku: productSku,
+                price: productPrice,
+                compareAtPrice: productCompareAtPrice
               },
-              // Only include variant if it exists
-              ...(item.variantId ? {
-                variant: {
-                  connect: { id: item.variantId }
-                }
-              } : {})
-            }))
-          },
-          history: {
-            create: [{
-              userId: user.id,
-              status: OrderStatus.PENDING_PAYMENT,
-              comment: 'سفارش ایجاد شد.'
-            }]
+              variant: {
+                ...variant,
+                price: variantPrice,
+                compareAtPrice: variantCompareAtPrice
+              },
+              quantity: item.quantity,
+              price: variantPrice,
+              compareAtPrice: variantCompareAtPrice,
+              taxRate: 0, // TODO: Calculate tax
+              taxAmount: 0,
+              discountAmount: 0,
+              total: variantPrice * item.quantity
+            });
+          } else {
+            // Handle products without variants
+            if (product.totalStock < item.quantity) {
+              stockIssues.push({
+                productId: product.id,
+                available: product.totalStock,
+                requested: item.quantity
+              });
+            }
+            
+            // Convert Decimal to number for calculations
+            const productPrice = toNumber(product.price);
+            const productCompareAtPrice = product.compareAtPrice ? toNumber(product.compareAtPrice) : null;
+            
+            enrichedItems.push({
+              product: {
+                id: product.id,
+                name: product.name,
+                sku: (product as { sku?: string }).sku || '',
+                price: productPrice,
+                compareAtPrice: productCompareAtPrice
+              },
+              variant: null,
+              quantity: item.quantity,
+              price: productPrice,
+              compareAtPrice: productCompareAtPrice,
+              taxRate: 0, // TODO: Calculate tax
+              taxAmount: 0,
+              discountAmount: 0,
+              total: productPrice * item.quantity
+            });
           }
-        },
-        include: {
-          items: true,
-          shippingAddress: true,
-          billingAddress: true
         }
-      });
-      
-      // Update product stock
-      for (const item of enrichedItems) {
-        if (item.variant) {
-          await tx.variant.update({
-            where: { id: item.variant.id },
-            data: { stock: { decrement: item.quantity } }
-          });
-        } else {
-          await tx.product.update({
-            where: { id: item.product.id },
-            data: { totalStock: { decrement: item.quantity } }
-          });
+        
+        if (stockIssues.length > 0) {
+          throw errorResponse(400, MESSAGES.INSUFFICIENT_STOCK, { stockIssues });
         }
+        
+        // Calculate order totals
+        const subtotal = enrichedItems.reduce((sum, item) => {
+          const price = toNumber(item.price);
+          return sum + (price * item.quantity);
+        }, 0);
+        const taxAmount = enrichedItems.reduce((sum, item) => sum + item.taxAmount, 0);
+        const shippingCost = 0; // TODO: Calculate shipping cost based on method and address
+        const discountAmount = 0; // TODO: Apply discounts
+        const total = subtotal + taxAmount + shippingCost - discountAmount;
+        
+        // Create shipping address with required fields
+        const shippingAddr = await tx.address.create({
+          data: {
+            ...shippingAddress,
+            phoneNumber: shippingAddress.phoneNumber || '',
+            userId: user.id,
+            type: 'SHIPPING'
+          }
+        });
+        
+        // Create billing address with required fields
+        const billingAddr = await tx.address.create({
+          data: useShippingAsBilling 
+            ? { 
+                ...shippingAddress,
+                phoneNumber: shippingAddress.phoneNumber || '',
+                userId: user.id,
+                type: 'BILLING'
+              }
+            : { 
+                ...billingAddress!,
+                phoneNumber: billingAddress!.phoneNumber || '',
+                userId: user.id,
+                type: 'BILLING'
+              }
+        });
+
+        // Prepare order items data
+        const orderItemsData = enrichedItems.map(item => {
+          const price = toNumber(item.price);
+          const total = price * item.quantity;
+          const variantName = item.variant 
+            ? `${item.variant.color || ''} ${item.variant.size || ''}`.trim() || null
+            : null;
+          
+          return {
+            productId: item.product.id,
+            variantId: item.variant?.id,
+            userId: user.id,
+            productName: item.product.name,
+            variantName: variantName,
+            sku: item.variant?.sku || 'SKU-NOT-AVAILABLE',
+            barcode: item.variant?.barcode ? String(item.variant.barcode) : null,
+            quantity: item.quantity,
+            price: price,
+            compareAtPrice: item.compareAtPrice !== null && item.compareAtPrice !== undefined 
+              ? toNumber(item.compareAtPrice) 
+              : null,
+            taxRate: item.taxRate,
+            taxAmount: item.taxAmount,
+            discountAmount: item.discountAmount,
+            total: total
+          };
+        });
+
+        // Create the order
+        const order = await tx.order.create({
+          data: {
+            orderNumber: `ORD-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+            userId: user.id,
+            status: OrderStatus.PENDING_PAYMENT,
+            subtotal,
+            taxAmount,
+            shippingCost: 0,
+            discountAmount: 0,
+            total,
+            paymentMethod: PaymentMethod.CASH_ON_DELIVERY,
+            paymentStatus: PaymentStatus.PENDING,
+            shippingMethod: ShippingMethod.STANDARD,
+            shippingAddressId: shippingAddr.id,
+            billingAddressId: billingAddr.id,
+            items: {
+              create: orderItemsData.map(item => ({
+                productId: item.productId,
+                variantId: item.variantId,
+                userId: user.id,
+                productName: item.productName,
+                variantName: item.variantName,
+                sku: item.sku,
+                barcode: item.barcode,
+                quantity: item.quantity,
+                price: item.price,
+                compareAtPrice: item.compareAtPrice,
+                taxRate: item.taxRate,
+                taxAmount: item.taxAmount,
+                discountAmount: item.discountAmount,
+                total: item.total,
+                isReturned: false
+              }))
+            },
+            history: {
+              create: [{
+                userId: user.id,
+                status: OrderStatus.PENDING_PAYMENT,
+                comment: 'سفارش ایجاد شد.'
+              }]
+            }
+          },
+          include: {
+            items: true,
+            shippingAddress: true,
+            billingAddress: true
+          }
+        });
+
+        // Update product stock
+        for (const item of enrichedItems) {
+          if (item.variant) {
+            await tx.variant.update({
+              where: { id: item.variant.id },
+              data: { stock: { decrement: item.quantity } }
+            });
+          } else {
+            await tx.product.update({
+              where: { id: item.product.id },
+              data: { totalStock: { decrement: item.quantity } }
+            });
+          }
+        }
+
+        // Return success response
+        return successResponse({
+          order,
+          paymentUrl: null // TODO: Return payment URL if needed
+        }, 201);
+      } catch (error) {
+        console.error('Error in transaction:', error);
+        throw error;
       }
-      
-      // TODO: Process payment (call payment gateway)
-      
-      return successResponse({
-        order,
+    })
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        order: result,
         paymentUrl: null // TODO: Return payment URL if needed
-      }, 201);
-      
-    }); // End of transaction
-    
-  } catch (error) {
-    console.error('Error creating order:', error);
-    return errorResponse(500, MESSAGES.INTERNAL_ERROR, { 
-      error: error instanceof Error ? error.message : 'Unknown error' 
+      }
+    }, { 
+      status: 201,
+      headers: { 'Content-Type': 'application/json; charset=utf-8' }
     });
+  } catch (error) {
+    console.error('Error in order creation:', error);
+    return NextResponse.json(
+      { success: false, message: 'خطای سرور' },
+      { 
+        status: 500,
+        headers: { 'Content-Type': 'application/json; charset=utf-8' }
+      }
+    );
   }
 }
 

@@ -196,9 +196,9 @@ export async function isRateLimited(
   
   try {
     const auth = await authenticateRequest(request);
-    if (auth.success && auth.adminId) {
-      // Use admin ID as identifier for authenticated users
-      identifier = `admin-${auth.adminId}`;
+    if (auth.success && auth.userId) {
+      // Use user ID as identifier for authenticated users
+      identifier = `user-${auth.userId}`;
     }
   } catch (error) {
     // Ignore auth errors and fall back to IP

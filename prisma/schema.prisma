@@ -89,6 +89,7 @@ model Product {
   createdById         Int?
   updatedById         Int?
   accessoryAttributes AccessoryAttributes?
+  cartItems           CartItem[]
   clothingAttributes  ClothingAttributes?
   mugAttributes       MugAttributes?
   orderItems          OrderItem[]
@@ -97,6 +98,7 @@ model Product {
   sizeGuide           SizeGuide?           @relation("ProductSizeGuide", fields: [sizeGuideId], references: [id])
   updatedBy           Admin?               @relation("UpdatedProducts", fields: [updatedById], references: [id])
   variants            Variant[]
+  wishlist            Wishlist[]
 
   @@index([slug])
   @@index([isActive])
@@ -118,6 +120,7 @@ model Variant {
   productId  String
   createdAt  DateTime    @default(now()) @db.Timestamptz(6)
   updatedAt  DateTime    @updatedAt @db.Timestamptz(6)
+  cartItems  CartItem[]
   orderItems OrderItem[]
   product    Product     @relation(fields: [productId], references: [id])
 
@@ -223,6 +226,7 @@ model User {
   id                       Int             @id @default(autoincrement())
   paymentMethods           PaymentMethod[]
   addresses                Address[]
+  cart                     Cart?
   orders                   Order[]
   orderHistory             OrderHistory[]
   orderItems               OrderItem[]
@@ -230,6 +234,7 @@ model User {
   tickets                  Ticket[]
   ticketMessages           TicketMessage[]
   sessions                 UserSession[]
+  wishlist                 Wishlist[]
 
   @@index([email])
   @@index([phoneNumber])
@@ -270,6 +275,9 @@ model SizeGuide {
   updatedAt   DateTime   @updatedAt @db.Timestamptz(6)
   products    Product[]  @relation("ProductSizeGuide")
   categories  Category[] @relation("CategorySizeGuide")
+
+  @@index([name])
+  @@index([type])
 }
 
 model Order {
@@ -437,6 +445,21 @@ model Media {
   @@index([mimeType])
 }
 
+model Wishlist {
+  id        String   @id @default(uuid())
+  userId    Int
+  productId String
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, productId])
+  @@index([userId])
+  @@index([productId])
+  @@index([createdAt])
+}
+
 model Address {
   id             String   @id @default(uuid())
   userId         Int
@@ -461,6 +484,35 @@ model Address {
   @@index([userId])
   @@index([type])
   @@index([isDefault])
+}
+
+model Cart {
+  id        String     @id @default(uuid())
+  userId    Int        @unique
+  createdAt DateTime   @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime   @updatedAt @db.Timestamptz(6)
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items     CartItem[]
+
+  @@index([userId])
+}
+
+model CartItem {
+  id        String   @id @default(uuid())
+  cartId    String
+  productId String
+  variantId String?
+  quantity  Int      @default(1)
+  price     Decimal  @default(0)
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+  cart      Cart     @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  product   Product  @relation(fields: [productId], references: [id])
+  variant   Variant? @relation(fields: [variantId], references: [id])
+
+  @@unique([cartId, productId, variantId])
+  @@index([productId])
+  @@index([variantId])
 }
 
 enum TicketStatus {

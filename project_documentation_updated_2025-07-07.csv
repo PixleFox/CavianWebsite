@@ -1,0 +1,46 @@
+Part Name,Type,State,Device,Situation,Last Version,Dependent to,Relevant to,File Name,Function,Info,file directory
+Environment,Config,Final,General,On local,1.0.0,N/A,"prisma.ts, auth.ts, kavenegar.ts, media-utils.ts",.env,Environment Configuration,Stores environment variables and secrets,e:\Cavian\Cavian V0.1.0\
+Git Ignore,Config,Final,General,On local,1.0.0,N/A,N/A,.gitignore,Git Ignore,Specifies files to be ignored by Git,e:\Cavian\Cavian V0.1.0\
+ReadMe,Doc,Document writing,General,On local,1.0.0,N/A,N/A,README.md,Documentation,Project overview and setup instructions,e:\Cavian\Cavian V0.1.0\
+ESLint Config,Config,Final,General,On local,1.0.0,N/A,N/A,eslint.config.mjs,Code Linting,ESLint configuration for code quality,e:\Cavian\Cavian V0.1.0\
+TypeScript Config,Config,Final,General,On local,1.0.0,Next.js,N/A,tsconfig.json,TypeScript,TypeScript configuration,e:\Cavian\Cavian V0.1.0\
+TypeScript Paths,Config,Final,General,On local,1.0.0,TypeScript,N/A,tsconfig.paths.json,TypeScript,Path aliases configuration,e:\Cavian\Cavian V0.1.0\
+Next Config,Config,Final,General,On local,1.0.0,Next.js,N/A,next.config.ts,Next.js,Next.js configuration file,e:\Cavian\Cavian V0.1.0\
+PostCSS Config,Config,Final,General,On local,1.0.0,Tailwind CSS,N/A,postcss.config.mjs,PostCSS,PostCSS configuration,e:\Cavian\Cavian V0.1.0\
+Package JSON,Config,Final,General,On local,1.0.0,Node.js,N/A,package.json,Dependencies,Project dependencies and scripts,e:\Cavian\Cavian V0.1.0\
+Package Lock,Config,Final,General,On local,1.0.0,Node.js,N/A,package-lock.json,Dependencies,Exact dependency tree for installation,e:\Cavian\Cavian V0.1.0\
+Next Env,Type,Final,General,On local,1.0.0,Next.js,N/A,next-env.d.ts,TypeScript,TypeScript declarations for Next.js,e:\Cavian\Cavian V0.1.0\
+Prisma Schema,Schema,Final,Database,On local,1.0.0,Prisma Client,N/A,schema.prisma,Database,Database schema definition,e:\Cavian\Cavian V0.1.0\prisma\
+Database Migration,Script,Final,Database,On local,1.0.0,schema.prisma,N/A,migration.sql,Database,Database migration files,e:\Cavian\Cavian V0.1.0\prisma\migrations\20250706134929_init\
+Auth Service,Service,Final,General,On local,1.0.0,"bcryptjs, jsonwebtoken, process.env","all API routes, prisma.ts",auth.ts,Authentication,Handles JWT and password hashing,e:\Cavian\Cavian V0.1.0\lib\
+Kavenegar Service,Service,Final,General,On local,1.0.0,"axios, process.env","forgot-password/request/route.ts, otp/request/route.ts",kavenegar.ts,SMS Service,Handles OTP sending via Kavenegar API,e:\Cavian\Cavian V0.1.0\lib\
+Media Utils,Service,Final,General,On local,1.0.0,"sharp, fs, path, uuid, @prisma/client","media/upload/route.ts, media/[filename]/route.ts, media/list/route.ts",media-utils.ts,Media Handling,Handles file uploads, processing and management,e:\Cavian\Cavian V0.1.0\lib\
+Cache Utils,Service,Final,General,On local,1.0.0,"react, next/cache","products/route.ts, products/[id]/route.ts",cache-utils.ts,Caching,Handles data caching and revalidation,e:\Cavian\Cavian V0.1.0\lib\
+Phone Utils,Service,Final,General,On local,1.0.0,N/A,"users/route.ts, users/[id]/route.ts, auth.ts",phone-utils.ts,Phone Number,Handles phone number formatting and validation,e:\Cavian\Cavian V0.1.0\lib\
+Error Handler,Lib,Final,General,On local,1.0.0,"next/server, @types/node","all API routes, auth.ts, kavenegar.ts",error-handler.ts,Error Handling,Centralized error handling utilities,e:\Cavian\Cavian V0.1.0\lib\
+Rate Limiter,Lib,Final,General,On local,1.0.0,"error-handler.ts, @types/node","otp/request/route.ts, forgot-password/request/route.ts",rate-limiter.ts,Rate Limiting,API rate limiting middleware,e:\Cavian\Cavian V0.1.0\lib\
+OTP Utils,Lib,Final,General,On local,1.0.0,N/A,"otp/request/route.ts, forgot-password/request/route.ts",otp-utils.ts,OTP Generation,Utility functions for OTP operations,e:\Cavian\Cavian V0.1.0\lib\
+Success Messages,Lib,Final,General,On local,1.0.0,N/A,"error-handler.ts, all API routes",success-messages.ts,Success Messages,Centralized success messages,e:\Cavian\Cavian V0.1.0\lib\
+API Utils,Lib,Final,General,On local,1.0.0,"next/server, @prisma/client","all API routes",api-utils.ts,API Utilities,Common API utilities and helpers,e:\Cavian\Cavian V0.1.0\lib\
+Barcode Utils,Lib,Final,General,On local,1.0.0,N/A,"products/route.ts, products/[id]/variants/route.ts",barcode-utils.ts,Barcode Generation,Utility functions for barcode generation,e:\Cavian\Cavian V0.1.0\lib\
+Product Utils,Lib,Final,General,On local,1.0.0,"@prisma/client, cache-utils.ts","products/route.ts, products/[id]/route.ts",product-utils.ts,Product Utilities,Product-related utility functions,e:\Cavian\Cavian V0.1.0\lib\
+SKU Utils,Lib,Final,General,On local,1.0.0,N/A,"products/route.ts, products/[id]/variants/route.ts",sku-utils.ts,SKU Generation,Utility functions for SKU generation,e:\Cavian\Cavian V0.1.0\lib\
+Validation,Lib,Final,General,On local,1.0.0,"zod","all API routes, product-utils.ts, media-utils.ts",validation.ts,Validation,Centralized validation schemas and functions,e:\Cavian\Cavian V0.1.0\lib\
+Media Upload API,API,Final,General,On local,1.0.0,"media-utils.ts, auth.ts, busboy, sharp, zod","media/[filename]/route.ts, media/list/route.ts",route.ts,Media Management,Handles file uploads and processing,e:\Cavian\Cavian V0.1.0\src\app\api\media\upload\
+Media List API,API,Final,General,On local,1.0.0,"prisma.ts, auth.ts, media-utils.ts","media/upload/route.ts, media/[filename]/route.ts",route.ts,Media Management,Lists and filters media files,e:\Cavian\Cavian V0.1.0\src\app\api\media\list\
+Media File API,API,Final,General,On local,1.0.0,"media-utils.ts, auth.ts","media/upload/route.ts, media/list/route.ts",route.ts,Media Management,Handles individual media file operations,e:\Cavian\Cavian V0.1.0\src\app\api\media\[filename]\
+Admin Dashboard Summary,API,Final,General,On local,1.0.0,"prisma.ts, auth.ts, cache-utils.ts",N/A,route.ts,Analytics,Provides summary data for admin dashboard,e:\Cavian\Cavian V0.1.0\src\app\api\admin-dashboard\summary\
+Admin Sales Overview,API,Final,General,On local,1.0.0,"prisma.ts, auth.ts, cache-utils.ts","admin-dashboard/summary/route.ts",route.ts,Analytics,Provides sales overview data for admin dashboard,e:\Cavian\Cavian V0.1.0\src\app\api\admin-dashboard\sales\overview\
+Admin Sales Trend,API,Final,General,On local,1.0.0,"prisma.ts, auth.ts, cache-utils.ts","admin-dashboard/summary/route.ts",route.ts,Analytics,Provides sales trend data for admin dashboard,e:\Cavian\Cavian V0.1.0\src\app\api\admin-dashboard\sales\trend\
+Tickets API,API,Final,General,On local,1.0.0,"prisma.ts, auth.ts, error-handler.ts","tickets/[id]/route.ts, tickets/[id]/messages/route.ts",route.ts,Support,Handles ticket CRUD operations,e:\Cavian\Cavian V0.1.0\src\app\api\tickets\
+Ticket Detail API,API,Final,General,On local,1.0.0,"prisma.ts, auth.ts, error-handler.ts","tickets/route.ts, tickets/[id]/messages/route.ts",route.ts,Support,Handles single ticket operations,e:\Cavian\Cavian V0.1.0\src\app\api\tickets\[id]\
+Ticket Messages API,API,Final,General,On local,1.0.0,"prisma.ts, auth.ts, error-handler.ts","tickets/[id]/route.ts, tickets/route.ts",route.ts,Support,Handles ticket messages,e:\Cavian\Cavian V0.1.0\src\app\api\tickets\[id]\messages\
+Orders API,API,Final,General,On local,1.0.0,"prisma.ts, auth.ts, error-handler.ts, cache-utils.ts","orders/[id]/route.ts, orders/[id]/history/route.ts",route.ts,Order Management,Handles order CRUD operations,e:\Cavian\Cavian V0.1.0\src\app\api\orders\
+Order Detail API,API,Final,General,On local,1.0.0,"prisma.ts, auth.ts, error-handler.ts, cache-utils.ts","orders/route.ts, orders/[id]/history/route.ts",route.ts,Order Management,Handles single order operations,e:\Cavian\Cavian V0.1.0\src\app\api\orders\[id]\
+Order History API,API,Final,General,On local,1.0.0,"prisma.ts, auth.ts, error-handler.ts, cache-utils.ts","orders/[id]/route.ts, orders/route.ts",route.ts,Order Management,Handles order history tracking,e:\Cavian\Cavian V0.1.0\src\app\api\orders\[id]\history\
+Pinar ExtraBold Font,Asset,Final,General,On local,1.0.0,globals.css,layout.tsx,Pinar-DS1-FD-ExtraBold.ttf,Font File,ExtraBold weight of Pinar font,e:\Cavian\Cavian V0.1.0\public\fonts\
+Pinar Medium Font,Asset,Final,General,On local,1.0.0,globals.css,layout.tsx,Pinar-DS1-FD-Medium.ttf,Font File,Medium weight of Pinar font,e:\Cavian\Cavian V0.1.0\public\fonts\
+Root Layout,Layout,Final,General,On local,1.0.0,Next.js,"page.tsx, globals.css",layout.tsx,Page Layout,Root layout component for the application,e:\Cavian\Cavian V0.1.0\src\app\
+Home Page,Page,Final,General,On local,1.0.0,Next.js,"layout.tsx, globals.css",page.tsx,Landing Page,Main landing page of the application,e:\Cavian\Cavian V0.1.0\src\app\
+Global Styles,Style,Final,General,On local,1.0.0,Tailwind CSS,"layout.tsx, page.tsx",globals.css,Global Styling,Global CSS styles and variables,e:\Cavian\Cavian V0.1.0\src\app\
+File Creation Dates,Data,Final,General,On local,1.0.0,N/A,project_documentation_final.csv,file_creation_dates.csv,Metadata,Timestamps of file creations,e:\Cavian\Cavian V0.1.0\
